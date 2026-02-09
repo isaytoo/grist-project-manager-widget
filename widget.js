@@ -85,7 +85,31 @@ var i18n = {
     totalTemplates: 'Total modèles',
     totalUsages: 'Utilisations totales',
     mostUsed: 'Plus utilisé',
-    categories: 'Catégories'
+    categories: 'Catégories',
+    tabTeam: 'Équipe',
+    teamUsersTitle: 'Utilisateurs',
+    teamUsersSubtitle: 'Gérez les membres de votre équipe',
+    teamGroupsTitle: 'Groupes',
+    teamGroupsSubtitle: 'Organisez vos utilisateurs en groupes',
+    addUser: 'Ajouter',
+    addGroup: 'Ajouter',
+    modalNewUser: 'Nouvel utilisateur',
+    modalNewGroup: 'Nouveau groupe',
+    fieldName: 'Nom *',
+    fieldEmail: 'Email',
+    fieldRole: 'Rôle',
+    roleAdmin: 'Administrateur',
+    roleMember: 'Membre',
+    roleViewer: 'Lecteur',
+    userCreated: 'Utilisateur ajouté !',
+    userDeleted: 'Utilisateur supprimé.',
+    groupCreated: 'Groupe créé !',
+    groupDeleted: 'Groupe supprimé.',
+    confirmDeleteUser: 'Supprimer cet utilisateur ?',
+    confirmDeleteGroup: 'Supprimer ce groupe ?',
+    noUsers: 'Aucun utilisateur',
+    noGroups: 'Aucun groupe',
+    members: 'membres'
   },
   en: {
     appTitle: 'Project Management',
@@ -167,7 +191,31 @@ var i18n = {
     totalTemplates: 'Total templates',
     totalUsages: 'Total usages',
     mostUsed: 'Most used',
-    categories: 'Categories'
+    categories: 'Categories',
+    tabTeam: 'Team',
+    teamUsersTitle: 'Users',
+    teamUsersSubtitle: 'Manage your team members',
+    teamGroupsTitle: 'Groups',
+    teamGroupsSubtitle: 'Organize your users into groups',
+    addUser: 'Add',
+    addGroup: 'Add',
+    modalNewUser: 'New user',
+    modalNewGroup: 'New group',
+    fieldName: 'Name *',
+    fieldEmail: 'Email',
+    fieldRole: 'Role',
+    roleAdmin: 'Administrator',
+    roleMember: 'Member',
+    roleViewer: 'Viewer',
+    userCreated: 'User added!',
+    userDeleted: 'User deleted.',
+    groupCreated: 'Group created!',
+    groupDeleted: 'Group deleted.',
+    confirmDeleteUser: 'Delete this user?',
+    confirmDeleteGroup: 'Delete this group?',
+    noUsers: 'No users',
+    noGroups: 'No groups',
+    members: 'members'
   }
 };
 
@@ -281,6 +329,7 @@ function switchTab(tabId) {
   if (tabId === 'table') renderTableView();
   if (tabId === 'gantt') renderGanttView();
   if (tabId === 'templates') renderTemplatesView();
+  if (tabId === 'team') renderTeamView();
 }
 
 // =============================================================================
@@ -445,6 +494,7 @@ function refreshAllViews() {
     if (tab === 'table') renderTableView();
     if (tab === 'gantt') renderGanttView();
     if (tab === 'templates') renderTemplatesView();
+    if (tab === 'team') renderTeamView();
   }
 }
 
@@ -852,6 +902,204 @@ function renderTemplatesView() {
   }
 
   document.getElementById('templates-list').innerHTML = html;
+}
+
+// =============================================================================
+// TEAM VIEW (Users & Groups)
+// =============================================================================
+
+function renderTeamView() {
+  renderUsersList();
+  renderGroupsList();
+}
+
+function renderUsersList() {
+  var container = document.getElementById('users-list');
+  if (!container) return;
+
+  if (users.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;">' + t('noUsers') + '</div>';
+    return;
+  }
+
+  var html = '<table class="data-table"><thead><tr>';
+  html += '<th>' + t('fieldName') + '</th>';
+  html += '<th>' + t('fieldEmail') + '</th>';
+  html += '<th>' + t('fieldRole') + '</th>';
+  html += '<th>' + t('fieldGroup') + '</th>';
+  html += '<th>' + t('colActions') + '</th>';
+  html += '</tr></thead><tbody>';
+
+  for (var i = 0; i < users.length; i++) {
+    var u = users[i];
+    var roleLabel = u.Role === 'admin' ? t('roleAdmin') : (u.Role === 'viewer' ? t('roleViewer') : t('roleMember'));
+    var roleBg = u.Role === 'admin' ? '#fef2f2;color:#dc2626' : (u.Role === 'viewer' ? '#f1f5f9;color:#64748b' : '#eff6ff;color:#1e40af');
+
+    html += '<tr>';
+    html += '<td style="font-weight:700;">👤 ' + sanitize(u.Name) + '</td>';
+    html += '<td>' + sanitize(u.Email) + '</td>';
+    html += '<td><span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:' + roleBg + '">' + roleLabel + '</span></td>';
+    html += '<td>' + (u.Group_Name ? '<span class="assignee-chip">👥 ' + sanitize(u.Group_Name) + '</span>' : '--') + '</td>';
+    html += '<td><button class="btn-icon" onclick="deleteUser(' + u.id + ')">🗑️</button></td>';
+    html += '</tr>';
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function renderGroupsList() {
+  var container = document.getElementById('groups-list');
+  if (!container) return;
+
+  if (groups.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;">' + t('noGroups') + '</div>';
+    return;
+  }
+
+  var html = '';
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    var memberCount = users.filter(function(u) { return u.Group_Name === g.Name; }).length;
+    var memberNames = users.filter(function(u) { return u.Group_Name === g.Name; }).map(function(u) { return u.Name || u.Email; });
+
+    html += '<div class="template-card">';
+    html += '<div class="template-card-info">';
+    html += '<h4>👥 ' + sanitize(g.Name) + '</h4>';
+    html += '<div class="template-meta">';
+    html += memberCount + ' ' + t('members');
+    if (g.Description) html += ' • ' + sanitize(g.Description);
+    html += '</div>';
+    if (memberNames.length > 0) {
+      html += '<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">';
+      for (var j = 0; j < memberNames.length; j++) {
+        html += '<span class="assignee-chip">👤 ' + sanitize(memberNames[j]) + '</span>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    html += '<button class="btn-icon" onclick="deleteGroup(' + g.id + ')">🗑️</button>';
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function openNewUserModal() {
+  var groupOptions = '<option value="">--</option>';
+  for (var i = 0; i < groups.length; i++) {
+    groupOptions += '<option value="' + sanitize(groups[i].Name) + '">' + sanitize(groups[i].Name) + '</option>';
+  }
+
+  var html = '<div class="modal-overlay" onclick="closeModal(event)">';
+  html += '<div class="modal" onclick="event.stopPropagation()">';
+  html += '<div class="modal-header"><h3>' + t('modalNewUser') + '</h3><button class="modal-close" onclick="closeModalForce()">✕</button></div>';
+  html += '<div class="modal-body">';
+  html += '<div class="form-group"><label>' + t('fieldName') + '</label><input type="text" id="user-name" /></div>';
+  html += '<div class="form-group"><label>' + t('fieldEmail') + '</label><input type="email" id="user-email" /></div>';
+  html += '<div class="form-row">';
+  html += '<div class="form-group"><label>' + t('fieldRole') + '</label><select id="user-role">';
+  html += '<option value="member">' + t('roleMember') + '</option>';
+  html += '<option value="admin">' + t('roleAdmin') + '</option>';
+  html += '<option value="viewer">' + t('roleViewer') + '</option>';
+  html += '</select></div>';
+  html += '<div class="form-group"><label>' + t('fieldGroup') + '</label><select id="user-group">' + groupOptions + '</select></div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="modal-footer">';
+  html += '<button class="btn btn-secondary" onclick="closeModalForce()">' + t('cancel') + '</button>';
+  html += '<button class="btn btn-primary" onclick="createUser()">' + t('save') + '</button>';
+  html += '</div></div></div>';
+
+  document.getElementById('modal-container').innerHTML = html;
+}
+
+function openNewGroupModal() {
+  var html = '<div class="modal-overlay" onclick="closeModal(event)">';
+  html += '<div class="modal" onclick="event.stopPropagation()">';
+  html += '<div class="modal-header"><h3>' + t('modalNewGroup') + '</h3><button class="modal-close" onclick="closeModalForce()">✕</button></div>';
+  html += '<div class="modal-body">';
+  html += '<div class="form-group"><label>' + t('fieldName') + '</label><input type="text" id="group-name" /></div>';
+  html += '<div class="form-group"><label>' + t('fieldDescription') + '</label><textarea id="group-desc"></textarea></div>';
+  html += '</div>';
+  html += '<div class="modal-footer">';
+  html += '<button class="btn btn-secondary" onclick="closeModalForce()">' + t('cancel') + '</button>';
+  html += '<button class="btn btn-primary" onclick="createGroup()">' + t('save') + '</button>';
+  html += '</div></div></div>';
+
+  document.getElementById('modal-container').innerHTML = html;
+}
+
+async function createUser() {
+  var name = document.getElementById('user-name').value.trim();
+  if (!name) return;
+
+  var record = {
+    Name: name,
+    Email: document.getElementById('user-email').value.trim(),
+    Role: document.getElementById('user-role').value,
+    Group_Name: document.getElementById('user-group').value
+  };
+
+  try {
+    await grist.docApi.applyUserActions([
+      ['AddRecord', USERS_TABLE, null, record]
+    ]);
+    showToast(t('userCreated'), 'success');
+    closeModalForce();
+    await loadAllData();
+  } catch (e) {
+    console.error('Error creating user:', e);
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function createGroup() {
+  var name = document.getElementById('group-name').value.trim();
+  if (!name) return;
+
+  var record = {
+    Name: name,
+    Description: document.getElementById('group-desc').value.trim()
+  };
+
+  try {
+    await grist.docApi.applyUserActions([
+      ['AddRecord', GROUPS_TABLE, null, record]
+    ]);
+    showToast(t('groupCreated'), 'success');
+    closeModalForce();
+    await loadAllData();
+  } catch (e) {
+    console.error('Error creating group:', e);
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function deleteUser(userId) {
+  if (!confirm(t('confirmDeleteUser'))) return;
+  try {
+    await grist.docApi.applyUserActions([
+      ['RemoveRecord', USERS_TABLE, userId]
+    ]);
+    showToast(t('userDeleted'), 'info');
+    await loadAllData();
+  } catch (e) {
+    console.error('Error deleting user:', e);
+  }
+}
+
+async function deleteGroup(groupId) {
+  if (!confirm(t('confirmDeleteGroup'))) return;
+  try {
+    await grist.docApi.applyUserActions([
+      ['RemoveRecord', GROUPS_TABLE, groupId]
+    ]);
+    showToast(t('groupDeleted'), 'info');
+    await loadAllData();
+  } catch (e) {
+    console.error('Error deleting group:', e);
+  }
 }
 
 // =============================================================================

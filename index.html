@@ -694,6 +694,7 @@
             <button class="tab-btn" data-tab="table" onclick="switchTab('table')">📊 <span data-i18n="tabTable">Tableau</span></button>
             <button class="tab-btn" data-tab="gantt" onclick="switchTab('gantt')">📐 <span data-i18n="tabGantt">Gantt</span></button>
             <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')">🎨 <span data-i18n="tabTemplates">Templates</span></button>
+            <button class="tab-btn" data-tab="team" onclick="switchTab('team')">👥 <span data-i18n="tabTeam">Équipe</span></button>
           </div>
           <button class="btn-new-task" onclick="openNewTaskModal()">+ <span data-i18n="newTask">Nouvelle tâche</span></button>
           <div class="lang-btns">
@@ -806,6 +807,37 @@
         </select>
       </div>
       <div id="templates-list"></div>
+    </div>
+
+    <!-- TAB: TEAM -->
+    <div class="tab-content" id="tab-team">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+
+        <!-- USERS SECTION -->
+        <div>
+          <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <h2 data-i18n="teamUsersTitle">Utilisateurs</h2>
+              <p data-i18n="teamUsersSubtitle">Gérez les membres de votre équipe</p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="openNewUserModal()">+ <span data-i18n="addUser">Ajouter</span></button>
+          </div>
+          <div id="users-list"></div>
+        </div>
+
+        <!-- GROUPS SECTION -->
+        <div>
+          <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <h2 data-i18n="teamGroupsTitle">Groupes</h2>
+              <p data-i18n="teamGroupsSubtitle">Organisez vos utilisateurs en groupes</p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="openNewGroupModal()">+ <span data-i18n="addGroup">Ajouter</span></button>
+          </div>
+          <div id="groups-list"></div>
+        </div>
+
+      </div>
     </div>
 
     <!-- FOOTER -->
