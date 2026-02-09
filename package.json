@@ -1,0 +1,9 @@
+{
+  "name": "grist-project-manager-widget",
+  "version": "1.0.0",
+  "description": "Grist Project Manager Widget - Kanban, Table, Gantt views with task management",
+  "private": true,
+  "scripts": {
+    "dev": "python3 -m http.server 8091"
+  }
+}
