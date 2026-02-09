@@ -723,6 +723,22 @@ function renderTableView() {
 // GANTT VIEW
 // =============================================================================
 
+function getISOWeek(date) {
+  var d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  var dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  var yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+function getWeekStart(year, weekNum) {
+  var jan4 = new Date(year, 0, 4);
+  var dayOfWeek = jan4.getDay() || 7;
+  var monday = new Date(jan4);
+  monday.setDate(jan4.getDate() - dayOfWeek + 1 + (weekNum - 1) * 7);
+  return monday;
+}
+
 function renderGanttView() {
   var yearSelect = document.getElementById('gantt-year');
   if (yearSelect.options.length === 0) {
@@ -736,7 +752,6 @@ function renderGanttView() {
   }
   yearSelect.value = ganttYear;
 
-  // Update mode buttons
   document.querySelectorAll('[data-gantt-mode]').forEach(function(btn) {
     btn.classList.toggle('active', btn.getAttribute('data-gantt-mode') === ganttMode);
   });
@@ -744,71 +759,134 @@ function renderGanttView() {
   var tasksWithDates = tasks.filter(function(task) { return task.Start_Date || task.Due_Date; });
   document.getElementById('gantt-task-count').textContent = '(' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + ')';
 
-  // Determine date range
-  var startDate, endDate, days;
-  if (ganttMode === 'months') {
-    startDate = new Date(ganttYear, 0, 1);
-    endDate = new Date(ganttYear, 11, 31);
-  } else {
-    startDate = new Date(ganttYear, ganttMonth, 1);
-    endDate = new Date(ganttYear, ganttMonth + 2, 0);
-  }
-
-  days = [];
-  var d = new Date(startDate);
-  while (d <= endDate) {
-    days.push(new Date(d));
-    d.setDate(d.getDate() + 1);
-  }
-
   var today = new Date();
   today.setHours(0, 0, 0, 0);
   var dayNames = currentLang === 'fr'
     ? ['DIM.', 'LUN.', 'MAR.', 'MER.', 'JEU.', 'VEN.', 'SAM.']
     : ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  var monthNamesShort = currentLang === 'fr'
+    ? ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']
+    : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var monthNames = currentLang === 'fr'
     ? ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
     : ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
   var html = '<div class="gantt-container"><table class="gantt-table">';
 
-  // Header row
-  html += '<thead><tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
+  // ===== WEEKS MODE =====
+  if (ganttMode === 'weeks') {
+    // Determine week range: show ~10 weeks centered on current month
+    var startWeek = getISOWeek(new Date(ganttYear, ganttMonth, 1));
+    var numWeeks = 10;
+    var weeks = [];
+    for (var w = 0; w < numWeeks; w++) {
+      var wn = startWeek + w;
+      var yr = ganttYear;
+      if (wn > 52) { wn -= 52; yr++; }
+      var ws = getWeekStart(yr, wn);
+      var we = new Date(ws);
+      we.setDate(we.getDate() + 6);
+      weeks.push({ num: wn, year: yr, start: ws, end: we });
+    }
+
+    // Header: week numbers with month subtitle
+    html += '<thead><tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
+    for (var wi = 0; wi < weeks.length; wi++) {
+      var wk = weeks[wi];
+      var isCurrentWeek = getISOWeek(today) === wk.num && today.getFullYear() === wk.year;
+      html += '<th style="min-width:80px;' + (isCurrentWeek ? 'background:#fef2f2;color:#ef4444;' : '') + '">';
+      html += '<div style="font-size:11px;font-weight:800;">S' + wk.num + '</div>';
+      html += '<div style="font-size:9px;font-weight:400;color:#94a3b8;">' + monthNamesShort[wk.start.getMonth()] + ' ' + String(wk.start.getFullYear()).substring(2) + '</div>';
+      html += '</th>';
+    }
+    html += '</tr></thead><tbody>';
+
+    // Task rows
+    for (var ti = 0; ti < tasksWithDates.length; ti++) {
+      var task = tasksWithDates[ti];
+      var dotClass = task.Priority === 'high' ? 'dot-high' : (task.Priority === 'medium' ? 'dot-medium' : 'dot-low');
+      var barClass = task.Status === 'done' ? 'gantt-bar-done' : (task.Status === 'progress' ? 'gantt-bar-progress' : 'gantt-bar-todo');
+      if (isOverdue(task)) barClass = 'gantt-bar-overdue';
+
+      html += '<tr>';
+      html += '<td class="gantt-task-label">';
+      html += '<div class="task-name"><span class="priority-dot ' + dotClass + '"></span> ' + sanitize(task.Title) + '</div>';
+      html += '<div class="task-info">';
+      if (task.Priority) html += '🏷️ ' + priorityLabel(task.Priority);
+      if (task.Assignee) html += ' 👤 ' + sanitize(task.Assignee).substring(0, 15) + '…';
+      if (task.Due_Date) html += ' ⏰ ' + (currentLang === 'fr' ? 'Échéance: ' : 'Due: ') + formatDate(task.Due_Date);
+      html += '</div></td>';
+
+      var tStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
+      var tEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
+      if (!tStart && tEnd) tStart = tEnd;
+      if (!tEnd && tStart) tEnd = tStart;
+      if (tStart) tStart.setHours(0, 0, 0, 0);
+      if (tEnd) tEnd.setHours(23, 59, 59, 999);
+
+      // Find first and last week index where bar should appear
+      var barStartIdx = -1, barEndIdx = -1;
+      for (var wi = 0; wi < weeks.length; wi++) {
+        var wk = weeks[wi];
+        if (tStart && tEnd && tStart <= wk.end && tEnd >= wk.start) {
+          if (barStartIdx === -1) barStartIdx = wi;
+          barEndIdx = wi;
+        }
+      }
+
+      for (var wi = 0; wi < weeks.length; wi++) {
+        var isCurrentWeek = getISOWeek(today) === weeks[wi].num && today.getFullYear() === weeks[wi].year;
+        html += '<td class="gantt-cell" style="position:relative;' + (isCurrentWeek ? 'background:#fef2f2;' : '') + '">';
+        if (wi === barStartIdx) {
+          var spanCols = barEndIdx - barStartIdx + 1;
+          var widthPx = spanCols * 80;
+          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + widthPx + 'px;cursor:pointer;" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title).substring(0, 20) + '</div>';
+        }
+        html += '</td>';
+      }
+
+      html += '</tr>';
+    }
+
+    // Footer
+    var viewStartMonth = monthNames[weeks[0].start.getMonth()];
+    var viewEndMonth = monthNames[weeks[weeks.length - 1].start.getMonth()];
+    html += '</tbody></table>';
+    html += '<div class="gantt-footer">';
+    html += '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>';
+    html += '<span>' + t('ganttViewRange') + ' ' + viewStartMonth + ' - ' + viewEndMonth + ' ' + ganttYear + '</span>';
+    html += '</div></div>';
+
+    document.getElementById('gantt-view').innerHTML = html;
+    return;
+  }
+
+  // ===== MONTHS MODE =====
   if (ganttMode === 'months') {
+    var startDate = new Date(ganttYear, 0, 1);
+    var endDate = new Date(ganttYear, 11, 31);
+
+    html += '<thead><tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
     for (var m = 0; m < 12; m++) {
       html += '<th colspan="1">' + monthNames[m].substring(0, 3).toUpperCase() + '</th>';
     }
-  } else {
-    for (var di = 0; di < days.length; di++) {
-      var dd = days[di];
-      var isToday = dd.getTime() === today.getTime();
-      var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
-      html += '<th class="' + (isToday ? 'today' : '') + (isWeekend ? ' weekend' : '') + '">';
-      html += '<div>' + dd.getDate() + '</div>';
-      html += '<div style="font-size:8px;">' + dayNames[dd.getDay()] + '</div>';
-      html += '</th>';
-    }
-  }
-  html += '</tr></thead><tbody>';
+    html += '</tr></thead><tbody>';
 
-  // Task rows
-  for (var ti = 0; ti < tasksWithDates.length; ti++) {
-    var task = tasksWithDates[ti];
-    var dotClass = task.Priority === 'high' ? 'dot-high' : (task.Priority === 'medium' ? 'dot-medium' : 'dot-low');
-    var barClass = task.Status === 'done' ? 'gantt-bar-done' : (task.Status === 'progress' ? 'gantt-bar-progress' : 'gantt-bar-todo');
-    if (isOverdue(task)) barClass = 'gantt-bar-overdue';
+    for (var ti = 0; ti < tasksWithDates.length; ti++) {
+      var task = tasksWithDates[ti];
+      var dotClass = task.Priority === 'high' ? 'dot-high' : (task.Priority === 'medium' ? 'dot-medium' : 'dot-low');
+      var barClass = task.Status === 'done' ? 'gantt-bar-done' : (task.Status === 'progress' ? 'gantt-bar-progress' : 'gantt-bar-todo');
+      if (isOverdue(task)) barClass = 'gantt-bar-overdue';
 
-    html += '<tr>';
-    html += '<td class="gantt-task-label">';
-    html += '<div class="task-name"><span class="priority-dot ' + dotClass + '"></span> ' + sanitize(task.Title) + '</div>';
-    html += '<div class="task-info">';
-    if (task.Priority) html += '🏷️ ' + priorityLabel(task.Priority);
-    if (task.Assignee) html += ' 👤 ' + sanitize(task.Assignee).substring(0, 15) + '…';
-    if (task.Due_Date) html += ' ⏰ ' + (currentLang === 'fr' ? 'Échéance: ' : 'Due: ') + formatDate(task.Due_Date);
-    html += '</div></td>';
+      html += '<tr>';
+      html += '<td class="gantt-task-label">';
+      html += '<div class="task-name"><span class="priority-dot ' + dotClass + '"></span> ' + sanitize(task.Title) + '</div>';
+      html += '<div class="task-info">';
+      if (task.Priority) html += '🏷️ ' + priorityLabel(task.Priority);
+      if (task.Assignee) html += ' 👤 ' + sanitize(task.Assignee).substring(0, 15) + '…';
+      if (task.Due_Date) html += ' ⏰ ' + (currentLang === 'fr' ? 'Échéance: ' : 'Due: ') + formatDate(task.Due_Date);
+      html += '</div></td>';
 
-    if (ganttMode === 'months') {
-      // Monthly view: one cell per month
       for (var m = 0; m < 12; m++) {
         var monthStart = new Date(ganttYear, m, 1);
         var monthEnd = new Date(ganttYear, m + 1, 0);
@@ -824,38 +902,82 @@ function renderGanttView() {
         }
         html += '</td>';
       }
-    } else {
-      // Daily view
-      var tStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
-      var tEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
-      if (!tStart && tEnd) tStart = tEnd;
-      if (!tEnd && tStart) tEnd = tStart;
-      if (tStart) tStart.setHours(0, 0, 0, 0);
-      if (tEnd) tEnd.setHours(0, 0, 0, 0);
+      html += '</tr>';
+    }
 
-      for (var di = 0; di < days.length; di++) {
-        var dd = days[di];
-        var isToday = dd.getTime() === today.getTime();
-        var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
-        var cellClass = (isToday ? 'today-col' : '') + (isWeekend ? ' weekend-col' : '');
+    html += '</tbody></table>';
+    html += '<div class="gantt-footer">';
+    html += '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>';
+    html += '<span>' + t('ganttViewRange') + ' ' + monthNames[0] + ' - ' + monthNames[11] + ' ' + ganttYear + '</span>';
+    html += '</div></div>';
 
-        html += '<td class="gantt-cell ' + cellClass + '">';
-        // Draw bar start
-        if (tStart && tEnd && dd.getTime() === tStart.getTime()) {
-          var span = Math.max(1, Math.round((tEnd - tStart) / (86400000)) + 1);
-          var widthPx = span * 36; // approximate cell width
-          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + widthPx + 'px;cursor:pointer;" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title).substring(0, 12) + '</div>';
-        }
-        html += '</td>';
+    document.getElementById('gantt-view').innerHTML = html;
+    return;
+  }
+
+  // ===== DAYS MODE =====
+  var startDate = new Date(ganttYear, ganttMonth, 1);
+  var endDate = new Date(ganttYear, ganttMonth + 2, 0);
+  var days = [];
+  var d = new Date(startDate);
+  while (d <= endDate) {
+    days.push(new Date(d));
+    d.setDate(d.getDate() + 1);
+  }
+
+  html += '<thead><tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
+  for (var di = 0; di < days.length; di++) {
+    var dd = days[di];
+    var isToday = dd.getTime() === today.getTime();
+    var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
+    html += '<th class="' + (isToday ? 'today' : '') + (isWeekend ? ' weekend' : '') + '">';
+    html += '<div>' + dd.getDate() + '</div>';
+    html += '<div style="font-size:8px;">' + dayNames[dd.getDay()] + '</div>';
+    html += '</th>';
+  }
+  html += '</tr></thead><tbody>';
+
+  for (var ti = 0; ti < tasksWithDates.length; ti++) {
+    var task = tasksWithDates[ti];
+    var dotClass = task.Priority === 'high' ? 'dot-high' : (task.Priority === 'medium' ? 'dot-medium' : 'dot-low');
+    var barClass = task.Status === 'done' ? 'gantt-bar-done' : (task.Status === 'progress' ? 'gantt-bar-progress' : 'gantt-bar-todo');
+    if (isOverdue(task)) barClass = 'gantt-bar-overdue';
+
+    html += '<tr>';
+    html += '<td class="gantt-task-label">';
+    html += '<div class="task-name"><span class="priority-dot ' + dotClass + '"></span> ' + sanitize(task.Title) + '</div>';
+    html += '<div class="task-info">';
+    if (task.Priority) html += '🏷️ ' + priorityLabel(task.Priority);
+    if (task.Assignee) html += ' 👤 ' + sanitize(task.Assignee).substring(0, 15) + '…';
+    if (task.Due_Date) html += ' ⏰ ' + (currentLang === 'fr' ? 'Échéance: ' : 'Due: ') + formatDate(task.Due_Date);
+    html += '</div></td>';
+
+    var tStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
+    var tEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
+    if (!tStart && tEnd) tStart = tEnd;
+    if (!tEnd && tStart) tEnd = tStart;
+    if (tStart) tStart.setHours(0, 0, 0, 0);
+    if (tEnd) tEnd.setHours(0, 0, 0, 0);
+
+    for (var di = 0; di < days.length; di++) {
+      var dd = days[di];
+      var isToday = dd.getTime() === today.getTime();
+      var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
+      var cellClass = (isToday ? 'today-col' : '') + (isWeekend ? ' weekend-col' : '');
+
+      html += '<td class="gantt-cell ' + cellClass + '">';
+      if (tStart && tEnd && dd.getTime() === tStart.getTime()) {
+        var span = Math.max(1, Math.round((tEnd - tStart) / (86400000)) + 1);
+        var widthPx = span * 36;
+        html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + widthPx + 'px;cursor:pointer;" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title).substring(0, 12) + '</div>';
       }
+      html += '</td>';
     }
 
     html += '</tr>';
   }
 
   html += '</tbody></table>';
-
-  // Footer
   var viewStart = monthNames[startDate.getMonth()];
   var viewEnd = monthNames[endDate.getMonth()];
   html += '<div class="gantt-footer">';
@@ -869,6 +991,11 @@ function renderGanttView() {
 function ganttNav(dir) {
   if (ganttMode === 'months') {
     ganttYear += dir;
+  } else if (ganttMode === 'weeks') {
+    // Navigate by ~2.5 months (10 weeks) at a time
+    ganttMonth += dir * 3;
+    if (ganttMonth > 11) { ganttMonth -= 12; ganttYear++; }
+    if (ganttMonth < 0) { ganttMonth += 12; ganttYear--; }
   } else {
     ganttMonth += dir * 2;
     if (ganttMonth > 11) { ganttMonth = 0; ganttYear++; }
