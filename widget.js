@@ -254,6 +254,9 @@ var USERS_TABLE = 'PM_Users';
 var GROUPS_TABLE = 'PM_Groups';
 var TEMPLATES_TABLE = 'PM_Templates';
 
+var isOwner = false;
+var currentUserEmail = '';
+
 // =============================================================================
 // UTILS
 // =============================================================================
@@ -562,7 +565,7 @@ function renderTaskCard(task) {
   html += '<div class="task-card-title">' + sanitize(task.Title) + '</div>';
   html += '<div class="task-card-actions">';
   html += '<span class="priority-dot ' + dotClass + '"></span>';
-  html += '<button class="btn-icon" onclick="deleteTask(' + task.id + ')" title="' + t('delete') + '">🗑️</button>';
+  if (isOwner) html += '<button class="btn-icon" onclick="deleteTask(' + task.id + ')" title="' + t('delete') + '">🗑️</button>';
   html += '</div></div>';
 
   if (task.Description) {
@@ -676,7 +679,7 @@ function renderTableView() {
     html += '<td style="' + (isOverdue(task) ? 'color:#dc2626;font-weight:700;' : '') + '">' + (task.Due_Date ? formatDate(task.Due_Date) + overdueHtml : t('noDate')) + '</td>';
     html += '<td>';
     html += '<button class="btn-icon" onclick="openEditTaskModal(' + task.id + ')" title="Modifier">✏️</button>';
-    html += '<button class="btn-icon" onclick="deleteTask(' + task.id + ')">🗑️</button>';
+    if (isOwner) html += '<button class="btn-icon" onclick="deleteTask(' + task.id + ')">🗑️</button>';
     html += '</td>';
     html += '</tr>';
   }
@@ -892,7 +895,7 @@ function renderTemplatesView() {
     html += '</div></div>';
     html += '<div style="display:flex;gap:4px;">';
     html += '<button class="btn btn-primary btn-sm" onclick="useTemplate(' + tpl.id + ')">' + t('useTemplate') + '</button>';
-    html += '<button class="btn-icon" onclick="deleteTemplate(' + tpl.id + ')">🗑️</button>';
+    if (isOwner) html += '<button class="btn-icon" onclick="deleteTemplate(' + tpl.id + ')">🗑️</button>';
     html += '</div>';
     html += '</div>';
   }
@@ -1077,6 +1080,7 @@ async function createGroup() {
 }
 
 async function deleteUser(userId) {
+  if (!isOwner) return;
   if (!confirm(t('confirmDeleteUser'))) return;
   try {
     await grist.docApi.applyUserActions([
@@ -1090,6 +1094,7 @@ async function deleteUser(userId) {
 }
 
 async function deleteGroup(groupId) {
+  if (!isOwner) return;
   if (!confirm(t('confirmDeleteGroup'))) return;
   try {
     await grist.docApi.applyUserActions([
@@ -1305,6 +1310,7 @@ async function updateTask(taskId) {
 }
 
 async function deleteTask(taskId) {
+  if (!isOwner) return;
   if (!confirm(t('confirmDelete'))) return;
   try {
     await grist.docApi.applyUserActions([
@@ -1344,6 +1350,7 @@ async function createTemplate() {
 }
 
 async function deleteTemplate(tplId) {
+  if (!isOwner) return;
   if (!confirm(t('confirmDeleteTemplate'))) return;
   try {
     await grist.docApi.applyUserActions([
@@ -1383,6 +1390,20 @@ async function useTemplate(tplId) {
 }
 
 // =============================================================================
+// OWNER RESTRICTIONS
+// =============================================================================
+
+function applyOwnerRestrictions() {
+  // Hide Team tab for non-owners
+  var teamTab = document.querySelector('[data-tab="team"]');
+  if (teamTab) teamTab.style.display = isOwner ? '' : 'none';
+
+  // Hide "Nouveau modèle" button in Templates tab for non-owners
+  var templatesAddBtn = document.querySelector('#tab-templates .btn-new-task');
+  if (templatesAddBtn) templatesAddBtn.style.display = isOwner ? '' : 'none';
+}
+
+// =============================================================================
 // INIT
 // =============================================================================
 
@@ -1392,6 +1413,44 @@ if (!isInsideGrist()) {
 } else {
   (async function() {
     await grist.ready({ requiredAccess: 'full' });
+
+    // Detect current user access level
+    try {
+      var accessInfo = await grist.docApi.getAccessRules();
+      // If we can read access rules, user has owner access
+      isOwner = true;
+    } catch (e) {
+      // getAccessRules fails for non-owners, try alternative detection
+      isOwner = false;
+    }
+
+    // Also try to get current user info
+    try {
+      grist.onRecord(function(record) {
+        // Just to trigger connection
+      });
+    } catch (e) {}
+
+    // Alternative: check if user can write to tables (editors can, but only owners manage team)
+    // We use a simple approach: try to read access rules (only owners can)
+    if (!isOwner) {
+      try {
+        // Fallback: check via widget options
+        var ownerFlag = await grist.widgetApi.getOption('pm_owner_email');
+        if (ownerFlag) {
+          // Owner email is stored, but current user is not owner
+          isOwner = false;
+        } else {
+          // First time: this user is setting up, assume owner
+          isOwner = true;
+          await grist.widgetApi.setOption('pm_owner_setup', true);
+        }
+      } catch (e) {
+        isOwner = true; // Default to owner if can't determine
+      }
+    }
+
+    applyOwnerRestrictions();
     await ensureTables();
     await loadAllData();
   })();
