@@ -1139,47 +1139,118 @@ async function deleteGroup(groupId) {
 // =============================================================================
 
 function openNewTaskModal(defaultStatus) {
-  var assigneeOptions = '<option value="">--</option>';
-  for (var i = 0; i < users.length; i++) {
-    assigneeOptions += '<option value="' + sanitize(users[i].Email || users[i].Name) + '">' + sanitize(users[i].Name || users[i].Email) + '</option>';
-  }
+  // Reset assignees for new task
+  editAssignees = [];
+
   var groupOptions = '<option value="">--</option>';
   for (var i = 0; i < groups.length; i++) {
     groupOptions += '<option value="' + sanitize(groups[i].Name) + '">' + sanitize(groups[i].Name) + '</option>';
   }
 
+  var dotColor = '#f59e0b'; // default medium
+
   var html = '<div class="modal-overlay" onclick="closeModal(event)">';
-  html += '<div class="modal" onclick="event.stopPropagation()">';
-  html += '<div class="modal-header"><h3>' + t('modalNewTask') + '</h3><button class="modal-close" onclick="closeModalForce()">✕</button></div>';
-  html += '<div class="modal-body">';
-  html += '<div class="form-group"><label>' + t('fieldTitle') + '</label><input type="text" id="task-title" /></div>';
-  html += '<div class="form-group"><label>' + t('fieldDescription') + '</label><textarea id="task-desc"></textarea></div>';
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>' + t('fieldStatus') + '</label><select id="task-status">';
-  html += '<option value="todo"' + (defaultStatus === 'todo' ? ' selected' : '') + '>' + t('statusTodo') + '</option>';
+  html += '<div class="modal modal-detail" onclick="event.stopPropagation()">';
+
+  // Top bar
+  html += '<div class="modal-detail-top">';
+  html += '<span class="group-dot" style="background:' + dotColor + '"></span>';
+  html += '<span style="font-size:14px;font-weight:800;">' + t('modalNewTask') + '</span>';
+  html += '<div style="flex:1;"></div>';
+  html += '<button class="modal-close" onclick="closeModalForce()">✕</button>';
+  html += '</div>';
+
+  // Content: left only for creation (no right panel summary yet)
+  html += '<div class="modal-detail-content" style="grid-template-columns:1fr;">';
+
+  // === LEFT PANEL ===
+  html += '<div class="modal-detail-left">';
+  html += '<input class="detail-title-input" type="text" id="task-title" placeholder="' + t('fieldTitle') + '" />';
+
+  // Description
+  html += '<div class="detail-field">';
+  html += '<div class="detail-field-value"><textarea id="task-desc" placeholder="' + t('fieldDescription') + '"></textarea></div>';
+  html += '</div>';
+
+  // Assignees (multi)
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">👤</span>';
+  html += '<span class="detail-field-label">' + t('fieldAssignee') + '</span>';
+  html += '<div class="detail-field-value">';
+  html += '<div class="assignee-chips" id="assignee-chips"></div>';
+  html += '<div class="assignee-add-row">';
+  html += '<select id="assignee-select">';
+  html += '<option value="">-- ' + t('searchAssignee') + ' --</option>';
+  for (var i = 0; i < users.length; i++) {
+    html += '<option value="' + sanitize(users[i].Email || users[i].Name) + '">' + sanitize(users[i].Name || users[i].Email) + '</option>';
+  }
+  html += '</select>';
+  html += '<button class="assignee-add-btn" onclick="addAssigneeChip(0)">' + t('addAssignee') + '</button>';
+  html += '</div>';
+  html += '</div></div>';
+
+  // Status + Priority
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">🏷️</span>';
+  html += '<span class="detail-field-label">' + t('fieldStatus') + '</span>';
+  html += '<div class="detail-field-value"><select id="task-status">';
+  html += '<option value="todo"' + (defaultStatus === 'todo' || !defaultStatus ? ' selected' : '') + '>' + t('statusTodo') + '</option>';
   html += '<option value="progress"' + (defaultStatus === 'progress' ? ' selected' : '') + '>' + t('statusProgress') + '</option>';
   html += '<option value="done"' + (defaultStatus === 'done' ? ' selected' : '') + '>' + t('statusDone') + '</option>';
-  html += '</select></div>';
-  html += '<div class="form-group"><label>' + t('fieldPriority') + '</label><select id="task-priority">';
+  html += '</select></div></div>';
+
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">🔥</span>';
+  html += '<span class="detail-field-label">' + t('fieldPriority') + '</span>';
+  html += '<div class="detail-field-value"><select id="task-priority">';
   html += '<option value="medium">' + t('priorityMedium') + '</option>';
   html += '<option value="high">' + t('priorityHigh') + '</option>';
   html += '<option value="low">' + t('priorityLow') + '</option>';
-  html += '</select></div>';
+  html += '</select></div></div>';
   html += '</div>';
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>' + t('fieldAssignee') + '</label><select id="task-assignee">' + assigneeOptions + '</select></div>';
-  html += '<div class="form-group"><label>' + t('fieldGroup') + '</label><select id="task-group">' + groupOptions + '</select></div>';
+
+  // Group
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">👥</span>';
+  html += '<span class="detail-field-label">' + t('fieldGroup') + '</span>';
+  html += '<div class="detail-field-value"><select id="task-group">' + groupOptions + '</select></div>';
   html += '</div>';
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>' + t('fieldStartDate') + '</label><input type="date" id="task-start" /></div>';
-  html += '<div class="form-group"><label>' + t('fieldDueDate') + '</label><input type="date" id="task-due" /></div>';
+
+  // Dates
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">📅</span>';
+  html += '<span class="detail-field-label">' + t('fieldStartDate') + '</span>';
+  html += '<div class="detail-field-value"><input type="date" id="task-start" /></div>';
   html += '</div>';
-  html += '<div class="form-group"><label>' + t('fieldCategory') + '</label><input type="text" id="task-category" /></div>';
+
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">⏰</span>';
+  html += '<span class="detail-field-label">' + t('fieldDueDate') + '</span>';
+  html += '<div class="detail-field-value"><input type="date" id="task-due" /></div>';
   html += '</div>';
-  html += '<div class="modal-footer">';
+  html += '</div>';
+
+  // Category
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">📁</span>';
+  html += '<span class="detail-field-label">' + t('fieldCategory') + '</span>';
+  html += '<div class="detail-field-value"><input type="text" id="task-category" /></div>';
+  html += '</div>';
+
+  html += '</div>'; // end left
+  html += '</div>'; // end content
+
+  // Footer
+  html += '<div class="modal-detail-footer">';
+  html += '<div></div>';
+  html += '<div style="display:flex;gap:8px;">';
   html += '<button class="btn btn-secondary" onclick="closeModalForce()">' + t('cancel') + '</button>';
   html += '<button class="btn btn-primary" onclick="createTask()">' + t('save') + '</button>';
-  html += '</div></div></div>';
+  html += '</div></div>';
+
+  html += '</div></div>'; // end modal + overlay
 
   document.getElementById('modal-container').innerHTML = html;
 }
@@ -1447,7 +1518,7 @@ async function createTask() {
     Description: document.getElementById('task-desc').value.trim(),
     Status: document.getElementById('task-status').value,
     Priority: document.getElementById('task-priority').value,
-    Assignee: document.getElementById('task-assignee').value,
+    Assignee: editAssignees.join(', '),
     Group_Name: document.getElementById('task-group').value,
     Start_Date: toEpoch(document.getElementById('task-start').value),
     Due_Date: toEpoch(document.getElementById('task-due').value),
