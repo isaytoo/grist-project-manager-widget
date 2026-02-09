@@ -109,7 +109,19 @@ var i18n = {
     confirmDeleteGroup: 'Supprimer ce groupe ?',
     noUsers: 'Aucun utilisateur',
     noGroups: 'Aucun groupe',
-    members: 'membres'
+    members: 'membres',
+    progression: 'Progression',
+    advancement: 'Avancement',
+    startLabel: 'Début :',
+    dueLabel: 'Échéance :',
+    quickActions: 'Actions rapides',
+    reopenTask: 'Rouvrir la tâche',
+    startTask: 'Démarrer la tâche',
+    completeTask: 'Terminer la tâche',
+    changePriority: 'Changer la priorité',
+    taskSummary: 'Résumé de la tâche',
+    addAssignee: 'Ajouter',
+    searchAssignee: 'Rechercher des noms...'
   },
   en: {
     appTitle: 'Project Management',
@@ -215,7 +227,19 @@ var i18n = {
     confirmDeleteGroup: 'Delete this group?',
     noUsers: 'No users',
     noGroups: 'No groups',
-    members: 'members'
+    members: 'members',
+    progression: 'Progression',
+    advancement: 'Progress',
+    startLabel: 'Start:',
+    dueLabel: 'Due:',
+    quickActions: 'Quick Actions',
+    reopenTask: 'Reopen task',
+    startTask: 'Start task',
+    completeTask: 'Complete task',
+    changePriority: 'Change priority',
+    taskSummary: 'Task Summary',
+    addAssignee: 'Add',
+    searchAssignee: 'Search names...'
   }
 };
 
@@ -560,9 +584,9 @@ function renderTaskCard(task) {
   var overdueHtml = isOverdue(task) ? ' <span class="overdue-badge">' + t('overdue') + '</span>' : '';
   var dotClass = task.Priority === 'high' ? 'dot-high' : (task.Priority === 'medium' ? 'dot-medium' : 'dot-low');
 
-  var html = '<div class="task-card" draggable="true" ondragstart="onDragStart(event, ' + task.id + ')" data-id="' + task.id + '">';
+  var html = '<div class="task-card" draggable="true" ondragstart="onDragStart(event, ' + task.id + ')" data-id="' + task.id + '" ondblclick="openEditTaskModal(' + task.id + ')">';
   html += '<div class="task-card-header">';
-  html += '<div class="task-card-title">' + sanitize(task.Title) + '</div>';
+  html += '<div class="task-card-title" style="cursor:pointer;" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
   html += '<div class="task-card-actions">';
   html += '<span class="priority-dot ' + dotClass + '"></span>';
   if (isOwner) html += '<button class="btn-icon" onclick="deleteTask(' + task.id + ')" title="' + t('delete') + '">🗑️</button>';
@@ -579,7 +603,10 @@ function renderTaskCard(task) {
     html += '<span class="task-card-date">📅 ' + formatDate(task.Due_Date) + overdueHtml + '</span>';
   }
   if (task.Assignee) {
-    html += '<span class="task-card-assignee">👤 ' + sanitize(task.Assignee) + '</span>';
+    var assigneeList = task.Assignee.split(',').map(function(a) { return a.trim(); }).filter(Boolean);
+    for (var ai = 0; ai < assigneeList.length; ai++) {
+      html += '<span class="task-card-assignee">👤 ' + sanitize(assigneeList[ai]) + '</span>';
+    }
   }
   html += '</div>';
   html += '</div>';
@@ -793,7 +820,7 @@ function renderGanttView() {
         var inRange = tStart && tEnd && tStart <= monthEnd && tEnd >= monthStart;
         html += '<td class="gantt-cell" style="position:relative;">';
         if (inRange) {
-          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;right:2px;" title="' + sanitize(task.Title) + '">' + sanitize(task.Title).substring(0, 10) + '</div>';
+          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;right:2px;cursor:pointer;" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title).substring(0, 10) + '</div>';
         }
         html += '</td>';
       }
@@ -817,7 +844,7 @@ function renderGanttView() {
         if (tStart && tEnd && dd.getTime() === tStart.getTime()) {
           var span = Math.max(1, Math.round((tEnd - tStart) / (86400000)) + 1);
           var widthPx = span * 36; // approximate cell width
-          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + widthPx + 'px;" title="' + sanitize(task.Title) + '">' + sanitize(task.Title).substring(0, 12) + '</div>';
+          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + widthPx + 'px;cursor:pointer;" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title).substring(0, 12) + '</div>';
         }
         html += '</td>';
       }
@@ -1157,15 +1184,15 @@ function openNewTaskModal(defaultStatus) {
   document.getElementById('modal-container').innerHTML = html;
 }
 
+var editAssignees = [];
+
 function openEditTaskModal(taskId) {
   var task = tasks.find(function(t) { return t.id === taskId; });
   if (!task) return;
 
-  var assigneeOptions = '<option value="">--</option>';
-  for (var i = 0; i < users.length; i++) {
-    var sel = (users[i].Email === task.Assignee || users[i].Name === task.Assignee) ? ' selected' : '';
-    assigneeOptions += '<option value="' + sanitize(users[i].Email || users[i].Name) + '"' + sel + '>' + sanitize(users[i].Name || users[i].Email) + '</option>';
-  }
+  // Parse multi-assignees (comma separated)
+  editAssignees = task.Assignee ? task.Assignee.split(',').map(function(a) { return a.trim(); }).filter(Boolean) : [];
+
   var groupOptions = '<option value="">--</option>';
   for (var i = 0; i < groups.length; i++) {
     var sel = groups[i].Name === task.Group_Name ? ' selected' : '';
@@ -1175,40 +1202,201 @@ function openEditTaskModal(taskId) {
   var startVal = task.Start_Date ? new Date(task.Start_Date * 1000).toISOString().split('T')[0] : '';
   var dueVal = task.Due_Date ? new Date(task.Due_Date * 1000).toISOString().split('T')[0] : '';
 
+  // Progress calculation
+  var progressPct = task.Status === 'done' ? 100 : (task.Status === 'progress' ? 50 : 10);
+  var barClass = task.Status === 'done' ? 'bar-done' : (task.Status === 'progress' ? 'bar-progress' : 'bar-todo');
+
+  // Priority dot color
+  var dotColor = task.Priority === 'high' ? '#ef4444' : (task.Priority === 'medium' ? '#f59e0b' : '#22c55e');
+
   var html = '<div class="modal-overlay" onclick="closeModal(event)">';
-  html += '<div class="modal" onclick="event.stopPropagation()">';
-  html += '<div class="modal-header"><h3>' + t('modalEditTask') + '</h3><button class="modal-close" onclick="closeModalForce()">✕</button></div>';
-  html += '<div class="modal-body">';
-  html += '<div class="form-group"><label>' + t('fieldTitle') + '</label><input type="text" id="task-title" value="' + sanitize(task.Title) + '" /></div>';
-  html += '<div class="form-group"><label>' + t('fieldDescription') + '</label><textarea id="task-desc">' + sanitize(task.Description) + '</textarea></div>';
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>' + t('fieldStatus') + '</label><select id="task-status">';
+  html += '<div class="modal modal-detail" onclick="event.stopPropagation()">';
+
+  // Top bar: group + status badge
+  html += '<div class="modal-detail-top">';
+  html += '<span class="group-dot" style="background:' + dotColor + '"></span>';
+  if (task.Group_Name) html += '<span style="font-size:12px;color:#64748b;">' + sanitize(task.Group_Name) + '</span>';
+  html += '<span class="status-badge status-' + task.Status + '">● ' + statusLabel(task.Status) + '</span>';
+  html += '<div style="flex:1;"></div>';
+  html += '<button class="modal-close" onclick="closeModalForce()">✕</button>';
+  html += '</div>';
+
+  // Content: left + right
+  html += '<div class="modal-detail-content">';
+
+  // === LEFT PANEL ===
+  html += '<div class="modal-detail-left">';
+  html += '<input class="detail-title-input" type="text" id="task-title" value="' + sanitize(task.Title) + '" />';
+
+  // Description
+  html += '<div class="detail-field">';
+  html += '<div class="detail-field-value"><textarea id="task-desc" placeholder="' + t('fieldDescription') + '">' + sanitize(task.Description) + '</textarea></div>';
+  html += '</div>';
+
+  // Assignees (multi)
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">👤</span>';
+  html += '<span class="detail-field-label">' + t('fieldAssignee') + '</span>';
+  html += '<div class="detail-field-value">';
+  html += '<div class="assignee-chips" id="assignee-chips">';
+  html += renderAssigneeChips();
+  html += '</div>';
+  html += '<div class="assignee-add-row">';
+  html += '<select id="assignee-select">';
+  html += '<option value="">-- ' + t('searchAssignee') + ' --</option>';
+  for (var i = 0; i < users.length; i++) {
+    html += '<option value="' + sanitize(users[i].Email || users[i].Name) + '">' + sanitize(users[i].Name || users[i].Email) + '</option>';
+  }
+  html += '</select>';
+  html += '<button class="assignee-add-btn" onclick="addAssigneeChip(' + task.id + ')">' + t('addAssignee') + '</button>';
+  html += '</div>';
+  html += '</div></div>';
+
+  // Status
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">🏷️</span>';
+  html += '<span class="detail-field-label">' + t('fieldStatus') + '</span>';
+  html += '<div class="detail-field-value"><select id="task-status">';
   html += '<option value="todo"' + (task.Status === 'todo' ? ' selected' : '') + '>' + t('statusTodo') + '</option>';
   html += '<option value="progress"' + (task.Status === 'progress' ? ' selected' : '') + '>' + t('statusProgress') + '</option>';
   html += '<option value="done"' + (task.Status === 'done' ? ' selected' : '') + '>' + t('statusDone') + '</option>';
-  html += '</select></div>';
-  html += '<div class="form-group"><label>' + t('fieldPriority') + '</label><select id="task-priority">';
+  html += '</select></div></div>';
+
+  // Dates
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">📅</span>';
+  html += '<span class="detail-field-label">' + t('fieldStartDate') + '</span>';
+  html += '<div class="detail-field-value"><input type="date" id="task-start" value="' + startVal + '" /></div>';
+  html += '</div>';
+
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">⏰</span>';
+  html += '<span class="detail-field-label">' + t('fieldDueDate') + '</span>';
+  html += '<div class="detail-field-value"><input type="date" id="task-due" value="' + dueVal + '" /></div>';
+  html += '</div>';
+
+  // Priority
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">🔥</span>';
+  html += '<span class="detail-field-label">' + t('fieldPriority') + '</span>';
+  html += '<div class="detail-field-value"><select id="task-priority">';
   html += '<option value="high"' + (task.Priority === 'high' ? ' selected' : '') + '>' + t('priorityHigh') + '</option>';
   html += '<option value="medium"' + (task.Priority === 'medium' ? ' selected' : '') + '>' + t('priorityMedium') + '</option>';
   html += '<option value="low"' + (task.Priority === 'low' ? ' selected' : '') + '>' + t('priorityLow') + '</option>';
-  html += '</select></div>';
+  html += '</select></div></div>';
+
+  // Group
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">👥</span>';
+  html += '<span class="detail-field-label">' + t('fieldGroup') + '</span>';
+  html += '<div class="detail-field-value"><select id="task-group">' + groupOptions + '</select></div>';
   html += '</div>';
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>' + t('fieldAssignee') + '</label><select id="task-assignee">' + assigneeOptions + '</select></div>';
-  html += '<div class="form-group"><label>' + t('fieldGroup') + '</label><select id="task-group">' + groupOptions + '</select></div>';
+
+  // Category
+  html += '<div class="detail-field">';
+  html += '<span class="detail-field-icon">📁</span>';
+  html += '<span class="detail-field-label">' + t('fieldCategory') + '</span>';
+  html += '<div class="detail-field-value"><input type="text" id="task-category" value="' + sanitize(task.Category || '') + '" /></div>';
   html += '</div>';
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>' + t('fieldStartDate') + '</label><input type="date" id="task-start" value="' + startVal + '" /></div>';
-  html += '<div class="form-group"><label>' + t('fieldDueDate') + '</label><input type="date" id="task-due" value="' + dueVal + '" /></div>';
+
+  html += '</div>'; // end left
+
+  // === RIGHT PANEL ===
+  html += '<div class="modal-detail-right">';
+
+  // Progression card
+  html += '<div class="detail-card">';
+  html += '<h4>⏳ ' + t('progression') + '</h4>';
+  html += '<div class="detail-info-row"><span class="info-label">' + t('advancement') + '</span><span class="info-value">' + progressPct + '%</span></div>';
+  html += '<div class="progress-bar-bg"><div class="progress-bar-fill ' + barClass + '" style="width:' + progressPct + '%"></div></div>';
+  html += '<div class="detail-info-row"><span class="info-label">' + t('startLabel') + '</span><span class="info-value">' + (startVal ? formatDate(task.Start_Date) : '--') + '</span></div>';
+  html += '<div class="detail-info-row"><span class="info-label">' + t('dueLabel') + '</span><span class="info-value" style="' + (isOverdue(task) ? 'color:#dc2626;' : '') + '">' + (dueVal ? formatDate(task.Due_Date) : '--') + (isOverdue(task) ? ' ⚠️' : '') + '</span></div>';
   html += '</div>';
-  html += '<div class="form-group"><label>' + t('fieldCategory') + '</label><input type="text" id="task-category" value="' + sanitize(task.Category || '') + '" /></div>';
+
+  // Quick actions card
+  html += '<div class="detail-card">';
+  html += '<h4>⚡ ' + t('quickActions') + '</h4>';
+  if (task.Status === 'done') {
+    html += '<button class="quick-action-btn" onclick="quickAction(' + task.id + ',\'todo\')">🔄 ' + t('reopenTask') + '</button>';
+  } else if (task.Status === 'todo') {
+    html += '<button class="quick-action-btn" onclick="quickAction(' + task.id + ',\'progress\')">▶️ ' + t('startTask') + '</button>';
+    html += '<button class="quick-action-btn" onclick="quickAction(' + task.id + ',\'done\')">✅ ' + t('completeTask') + '</button>';
+  } else {
+    html += '<button class="quick-action-btn" onclick="quickAction(' + task.id + ',\'done\')">✅ ' + t('completeTask') + '</button>';
+    html += '<button class="quick-action-btn" onclick="quickAction(' + task.id + ',\'todo\')">⏪ ' + t('reopenTask') + '</button>';
+  }
   html += '</div>';
-  html += '<div class="modal-footer">';
+
+  // Summary card
+  html += '<div class="detail-card">';
+  html += '<h4>📋 ' + t('taskSummary') + '</h4>';
+  html += '<div class="detail-info-row"><span class="info-label">' + t('fieldStatus') + ' :</span><span class="info-value" style="color:' + (task.Status === 'done' ? '#22c55e' : (task.Status === 'progress' ? '#3b82f6' : '#f59e0b')) + '">' + statusLabel(task.Status) + '</span></div>';
+  html += '<div class="detail-info-row"><span class="info-label">' + t('fieldPriority') + ' :</span><span class="info-value" style="color:' + dotColor + '">' + priorityLabel(task.Priority) + '</span></div>';
+  html += '<div class="detail-info-row"><span class="info-label">' + t('fieldAssignee') + ' :</span><span class="info-value">' + editAssignees.length + '</span></div>';
+  html += '</div>';
+
+  html += '</div>'; // end right
+  html += '</div>'; // end content
+
+  // Footer
+  html += '<div class="modal-detail-footer">';
+  if (isOwner) html += '<button class="btn-danger" onclick="deleteTask(' + task.id + ')">' + t('delete') + '</button>';
+  else html += '<div></div>';
+  html += '<div style="display:flex;gap:8px;">';
   html += '<button class="btn btn-secondary" onclick="closeModalForce()">' + t('cancel') + '</button>';
   html += '<button class="btn btn-primary" onclick="updateTask(' + task.id + ')">' + t('save') + '</button>';
-  html += '</div></div></div>';
+  html += '</div></div>';
+
+  html += '</div></div>'; // end modal + overlay
 
   document.getElementById('modal-container').innerHTML = html;
+}
+
+function renderAssigneeChips() {
+  var html = '';
+  for (var i = 0; i < editAssignees.length; i++) {
+    var name = editAssignees[i];
+    var displayName = name;
+    // Try to find user name from email
+    for (var j = 0; j < users.length; j++) {
+      if (users[j].Email === name || users[j].Name === name) {
+        displayName = users[j].Name || users[j].Email;
+        break;
+      }
+    }
+    html += '<span class="assignee-chip-tag">' + sanitize(displayName) + ' <span class="chip-remove" onclick="removeAssigneeChip(' + i + ')">✕</span></span>';
+  }
+  return html;
+}
+
+function addAssigneeChip(taskId) {
+  var sel = document.getElementById('assignee-select');
+  var val = sel.value;
+  if (!val || editAssignees.indexOf(val) !== -1) return;
+  editAssignees.push(val);
+  document.getElementById('assignee-chips').innerHTML = renderAssigneeChips();
+  sel.value = '';
+}
+
+function removeAssigneeChip(index) {
+  editAssignees.splice(index, 1);
+  document.getElementById('assignee-chips').innerHTML = renderAssigneeChips();
+}
+
+async function quickAction(taskId, newStatus) {
+  try {
+    await grist.docApi.applyUserActions([
+      ['UpdateRecord', TASKS_TABLE, taskId, { Status: newStatus }]
+    ]);
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id === taskId) { tasks[i].Status = newStatus; break; }
+    }
+    showToast(t('taskMoved'), 'success');
+    closeModalForce();
+    refreshAllViews();
+  } catch (e) {
+    console.error('Error quick action:', e);
+  }
 }
 
 function openNewTemplateModal() {
@@ -1289,7 +1477,7 @@ async function updateTask(taskId) {
     Description: document.getElementById('task-desc').value.trim(),
     Status: document.getElementById('task-status').value,
     Priority: document.getElementById('task-priority').value,
-    Assignee: document.getElementById('task-assignee').value,
+    Assignee: editAssignees.join(', '),
     Group_Name: document.getElementById('task-group').value,
     Start_Date: toEpoch(document.getElementById('task-start').value),
     Due_Date: toEpoch(document.getElementById('task-due').value),
