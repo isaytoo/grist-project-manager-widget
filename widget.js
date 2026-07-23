@@ -743,6 +743,7 @@ var currentFilterRole = null;
 var currentFilterAssignee = null; // user Name
 var currentFilterCategory = null;
 var currentFilterTag = null;
+var currentFilterGroup = null;
 var mineOnly = false; // "Mes projets" : projets créés par moi OU où je suis assigné
 var activeTimers = {}; // taskId -> startTime (for running timers)
 var kanbanGroupBy = 'status'; // 'status' | 'priority' | 'project'
@@ -2605,6 +2606,17 @@ function renderProjectSelector() {
 
   var html = '';
 
+  // Filtre Groupe - utilise les groupes définis dans PM_Groups + ceux référencés dans les tâches
+  var allGroups = groups.map(function(g) { return g.Name; }).filter(Boolean);
+  tasks.forEach(function(t) {
+    if (t.Group_Name && allGroups.indexOf(t.Group_Name) === -1) {
+      allGroups.push(t.Group_Name);
+    }
+  });
+  allGroups.sort();
+  var groupOptions = allGroups.map(function(g) { return { value: g, label: g }; });
+  html += buildFilterCombo('group', currentLang === 'fr' ? '— Groupe —' : '— Group —', groupOptions, currentFilterGroup, filterByGroup);
+
   // Filtre Rôle
   var roleOptions = roles.map(function(r) { return { value: r, label: roleLabel(r) }; });
   html += buildFilterCombo('role', currentLang === 'fr' ? '— Rôle —' : '— Role —', roleOptions, currentFilterRole, filterByRole);
@@ -2679,7 +2691,7 @@ function renderProjectSelector() {
     html += '<button class="btn-icon" onclick="toggleMyProjects()" title="' + (currentLang === 'fr' ? 'Mes projets : créés par moi ou qui me sont assignés' : 'My projects: created by or assigned to me') + '" style="width:auto;padding:0 12px;font-size:12px;font-weight:600;' + (mineOnly ? 'background:#6366f1;color:#fff;border-color:#6366f1;' : '') + '">👤 ' + (currentLang === 'fr' ? 'Mes projets' : 'My projects') + '</button>';
   }
 
-  if (currentFilterRole || currentFilterAssignee || currentFilterCategory || currentFilterTag || currentProjectId || mineOnly) {
+  if (currentFilterRole || currentFilterAssignee || currentFilterCategory || currentFilterTag || currentFilterGroup || currentProjectId || mineOnly) {
     html += '<button class="btn-icon" onclick="resetFilters()" title="' + (currentLang === 'fr' ? 'Réinitialiser les filtres' : 'Reset filters') + '" style="color:#ef4444;">✕</button>';
   }
 
@@ -2694,7 +2706,7 @@ function renderProjectSelector() {
     var appEl = document.querySelector('.app-container') || document.body;
     appEl.insertBefore(banner, appEl.firstChild);
   }
-  if (currentFilterRole || currentFilterAssignee || currentFilterCategory || currentFilterTag || currentProjectId || mineOnly) {
+  if (currentFilterRole || currentFilterAssignee || currentFilterCategory || currentFilterTag || currentFilterGroup || currentProjectId || mineOnly) {
     var proj2 = currentProjectId ? projects.find(function(p) { return p.id === currentProjectId; }) : null;
     var c2 = (proj2 && proj2.Color) ? proj2.Color : '#6366f1';
     var bits = [];
@@ -2707,6 +2719,7 @@ function renderProjectSelector() {
     }
     if (currentFilterCategory) bits.push('📁 ' + sanitize(currentFilterCategory));
     if (currentFilterTag) bits.push('🏷️ ' + sanitize(currentFilterTag));
+    if (currentFilterGroup) bits.push('👥 ' + sanitize(currentFilterGroup));
     if (proj2) bits.push('🎯 ' + sanitize(proj2.Name));
     banner.innerHTML = (currentLang === 'fr' ? 'Filtres actifs : ' : 'Active filters: ') + '<strong>' + bits.join(' › ') + '</strong> — <a href="#" onclick="resetFilters();return false;" style="color:inherit;text-decoration:underline;">' + (currentLang === 'fr' ? 'Tout effacer' : 'Clear all') + '</a>';
     banner.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 16px;background:' + c2 + '15;border-bottom:2px solid' + c2 + ';color:' + c2 + ';font-size:12px;font-weight:600;';
@@ -2985,7 +2998,7 @@ function persistFilters() {
   try {
     localStorage.setItem('pm-filters', JSON.stringify({
       role: currentFilterRole, assignee: currentFilterAssignee,
-      category: currentFilterCategory, tag: currentFilterTag, mineOnly: mineOnly
+      category: currentFilterCategory, tag: currentFilterTag, group: currentFilterGroup, mineOnly: mineOnly
     }));
   } catch (e) {}
 }
@@ -2996,6 +3009,7 @@ function restoreFilters() {
     currentFilterAssignee = s.assignee || null;
     currentFilterCategory = s.category || null;
     currentFilterTag = s.tag || null;
+    currentFilterGroup = s.group || null;
     mineOnly = !!s.mineOnly;
   } catch (e) {}
 }
@@ -3046,11 +3060,27 @@ function filterByTag(val) {
   refreshAllViews();
 }
 
+function filterByGroup(group) {
+  currentFilterGroup = group || null;
+  // Vérifier la compatibilité avec le projet sélectionné
+  if (currentFilterGroup && currentProjectId) {
+    var match = tasks.some(function(t) {
+      if (Number(t.Project_Id) !== Number(currentProjectId)) return false;
+      return String(t.Group_Name || '').trim() === String(group).trim();
+    });
+    if (!match) currentProjectId = null;
+  }
+  persistFilters();
+  renderProjectSelector();
+  refreshAllViews();
+}
+
 function resetFilters() {
   currentFilterRole = null;
   currentFilterAssignee = null;
   currentFilterCategory = null;
   currentFilterTag = null;
+  currentFilterGroup = null;
   mineOnly = false;
   currentProjectId = null;
   localStorage.setItem('pm-current-project', '');
@@ -3087,6 +3117,10 @@ function getFilteredTasks() {
   if (currentFilterTag) {
     var tagKey = String(currentFilterTag).trim();
     result = result.filter(function(t) { return String(t.Tag || '').trim() === tagKey; });
+  }
+  if (currentFilterGroup) {
+    var groupKey = String(currentFilterGroup).trim();
+    result = result.filter(function(t) { return String(t.Group_Name || '').trim() === groupKey; });
   }
   if (mineOnly && !currentProjectId) {
     var myIds = myProjectIdSet();
