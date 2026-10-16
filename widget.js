@@ -50,6 +50,7 @@ var i18n = {
     ganttSortPriority: 'Priorité',
     ganttSortAlpha: 'A → Z',
     ganttSortDue: 'Échéance',
+    ganttSortProject: 'Projet',
     ganttCustom: 'Personnalisé',
     ganttRangeFrom: 'Du :',
     ganttRangeTo: 'au :',
@@ -392,6 +393,7 @@ var i18n = {
     ganttSortPriority: 'Priority',
     ganttSortAlpha: 'A → Z',
     ganttSortDue: 'Due date',
+    ganttSortProject: 'Project',
     ganttCustom: 'Custom',
     ganttRangeFrom: 'From:',
     ganttRangeTo: 'to:',
@@ -855,7 +857,7 @@ async function saveSetting(key, value) {
   }
 }
 var ganttMode = 'days';
-var ganttSort = 'default'; // 'default' | 'priority' | 'alpha' | 'due'
+var ganttSort = 'default'; // 'default' | 'priority' | 'alpha' | 'due' | 'project'
 var ganttCustomStart = ''; // mode 'custom' : date de début (YYYY-MM-DD)
 var ganttCustomEnd = '';   // mode 'custom' : date de fin (YYYY-MM-DD)
 var ganttYear = new Date().getFullYear();
@@ -4556,6 +4558,23 @@ function getExtensionBarColor(task) {
   return '#3b82f6';
 }
 
+/**
+ * Ordre du Gantt « par projet ».
+ *
+ * Regroupe les tâches projet par projet, puis les ordonne par date à
+ * l'intérieur de chaque groupe : un Gantt trié sur le seul nom de projet, dont
+ * les barres partent dans le désordre, ne se lit pas. Les tâches sans projet
+ * ferment la liste plutôt que de se mêler au premier groupe.
+ */
+function ganttCompareProjet(a, b) {
+  var na = getProjectName(a.Project_Id) || '', nb = getProjectName(b.Project_Id) || '';
+  if (!na !== !nb) return na ? -1 : 1;
+  var c = na.localeCompare(nb, currentLang === 'fr' ? 'fr' : 'en', { sensitivity: 'base' });
+  if (c !== 0) return c;
+  var da = a.Start_Date || a.Due_Date || 0, db = b.Start_Date || b.Due_Date || 0;
+  return da - db;
+}
+
 function getGanttBarColor(task) {
   var statuses = getKanbanStatuses();
   for (var si = 0; si < statuses.length; si++) {
@@ -4674,6 +4693,8 @@ function renderGanttView() {
       var da = a.Due_Date || a.Start_Date || 0, db = b.Due_Date || b.Start_Date || 0;
       return da - db;
     });
+  } else if (ganttSort === 'project') {
+    tasksWithDates.sort(ganttCompareProjet);
   }
   document.getElementById('gantt-task-count').textContent = '(' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + ')';
 
