@@ -2,6 +2,17 @@
 // GRIST PROJECT MANAGER WIDGET
 // =============================================================================
 
+// Version affichée à côté du titre et en pied de page. À incrémenter en même
+// temps que le ?v= de index.html : si les deux divergent, l'interface annonce
+// une version que le navigateur n'a pas forcément chargée.
+var WIDGET_VERSION = 'v139';
+(function () {
+  ['widget-version', 'widget-version-footer'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = WIDGET_VERSION;
+  });
+})();
+
 var currentLang = 'fr';
 
 var i18n = {

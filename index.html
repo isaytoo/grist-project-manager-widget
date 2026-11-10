@@ -4026,6 +4026,14 @@
     }
 
     /* ========== FOOTER ========== */
+    /* Version chargée : une pastille discrète à côté du titre, pour savoir d'un
+       coup d'œil si le navigateur sert bien la dernière. */
+    .widget-version {
+      display: inline-block; vertical-align: middle; margin-left: 6px;
+      padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+      letter-spacing: .3px; color: #64748b; background: #f1f5f9; border: 1px solid #e2e8f0;
+    }
+    body.dark-mode .widget-version { color: #94a3b8; background: #1e293b; border-color: #334155; }
     .app-footer {
       text-align: center;
       padding: 16px;
@@ -4052,7 +4060,7 @@
     <div class="app-header">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
         <div>
-          <h1>📋 <span data-i18n="appTitle">Gestion de Projet</span></h1>
+          <h1>📋 <span data-i18n="appTitle">Gestion de Projet</span> <span class="widget-version" id="widget-version" title="Version du widget"></span></h1>
           <p data-i18n="appSubtitle">Organisez et suivez vos tâches avec le tableau Kanban ou la vue tableau</p>
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
@@ -4683,9 +4691,9 @@
     </div>
   </div>
 
-  <script src="widget.js?v=138"></script>
+  <script src="widget.js?v=139"></script>
   <footer style="position: fixed; bottom: 0; left: 0; right: 0; background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 4px 12px; font-size: 0.7em; color: #94a3b8; display: flex; justify-content: space-between; z-index: 1000;">
-    <span>© 2026 isaytoo</span>
+    <span>© 2026 isaytoo · <span id="widget-version-footer"></span></span>
   </footer>
 </body>
 </html>
