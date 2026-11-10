@@ -1309,9 +1309,14 @@
     .calendar-mode-btn:hover:not(.active) {
       color: #1e293b;
     }
+    /* minmax(0, 1fr) et non 1fr : « 1fr » vaut minmax(auto, 1fr), donc une colonne
+       ne descend jamais sous la largeur de son contenu. Un titre de tâche long, qui
+       ne se coupe pas, élargissait sa colonne ; la grille des jours débordait et
+       perdait samedi et dimanche, pendant que celle des en-têtes, au contenu court,
+       restait à un septième — d'où des jours décalés sous le mauvais intitulé. */
     .calendar-weekdays {
       display: grid;
-      grid-template-columns: repeat(7, 1fr);
+      grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 4px;
       margin-bottom: 8px;
     }
@@ -1328,11 +1333,12 @@
     }
     .calendar-days {
       display: grid;
-      grid-template-columns: repeat(7, 1fr);
+      grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 4px;
       overflow: hidden;
     }
     .calendar-day {
+      min-width: 0;
       min-height: 100px;
       background: #f8fafc;
       border-radius: 10px;
@@ -1431,7 +1437,13 @@
     }
     /* Week view */
     .calendar-days.week-view {
-      grid-template-columns: repeat(7, 1fr);
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+    }
+    /* La semaine a la hauteur pour elle : un titre long passe à la ligne au lieu
+       d'être tronqué, c'est la vue où on veut pouvoir le lire en entier. */
+    .calendar-days.week-view .day-task {
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .calendar-days.week-view .calendar-day {
       min-height: 300px;
@@ -4671,7 +4683,7 @@
     </div>
   </div>
 
-  <script src="widget.js?v=137"></script>
+  <script src="widget.js?v=138"></script>
   <footer style="position: fixed; bottom: 0; left: 0; right: 0; background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 4px 12px; font-size: 0.7em; color: #94a3b8; display: flex; justify-content: space-between; z-index: 1000;">
     <span>© 2026 isaytoo</span>
   </footer>
