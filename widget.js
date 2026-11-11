@@ -5,13 +5,17 @@
 // Version affichée à côté du titre et en pied de page. À incrémenter en même
 // temps que le ?v= de index.html : si les deux divergent, l'interface annonce
 // une version que le navigateur n'a pas forcément chargée.
-var WIDGET_VERSION = 'v142';
-(function () {
+var WIDGET_VERSION = 'v143';
+function showWidgetVersion() {
   ['widget-version', 'widget-version-footer'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.textContent = WIDGET_VERSION;
   });
-})();
+}
+showWidgetVersion();
+// Le pied de page est placé après ce script dans la page : il n'existe pas encore
+// à ce stade. La pastille du pied restait vide depuis la v139.
+document.addEventListener('DOMContentLoaded', showWidgetVersion);
 
 var currentLang = 'fr';
 

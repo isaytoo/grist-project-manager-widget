@@ -59,6 +59,9 @@ function fauxGrist(base, refuser) {
 
 async function monter(base, { email = 'said@x.fr', proprietaire = true, refuser = null, stockage = null, maintenant = null } = {}) {
   let html = fs.readFileSync(RACINE + '/index.html', 'utf8');
+  // Le script du widget est remplacé par un repère : il sera exécuté à cet endroit
+  // précis, avant que la suite de la page n'existe — comme dans un navigateur.
+  html = html.replace(/<script[^>]*src="widget\.js[^"]*"[^>]*><\/script>/, '<meta id="__ici_le_script">');
   html = html.replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/g, '');
   const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'https://widget.test/' });
   const w = dom.window;
@@ -79,9 +82,20 @@ async function monter(base, { email = 'said@x.fr', proprietaire = true, refuser 
       + 'D.prototype=R.prototype;D.now=function(){return F;};D.parse=R.parse;D.UTC=R.UTC;window.Date=D;})();';
     w.document.body.appendChild(horloge);
   }
+  // Tout ce qui suit le script dans la page est retiré le temps de son exécution,
+  // puis remis : un script qui chercherait le pied de page trop tôt ne le trouve
+  // pas, exactement comme en vrai. (Ajouté en v143 : l'ancien harnais exécutait le
+  // script en fin de page et avait laissé passer une pastille de version vide.)
+  const repere = w.document.getElementById('__ici_le_script');
+  const apres = [];
+  for (let n = repere; n && n !== w.document.documentElement; n = n.parentNode) {
+    while (n.nextSibling) { apres.push([n.parentNode, n.nextSibling]); n.parentNode.removeChild(n.nextSibling); }
+  }
   const sc = w.document.createElement('script');
   sc.textContent = fs.readFileSync(RACINE + '/widget.js', 'utf8');
-  w.document.body.appendChild(sc);
+  repere.parentNode.replaceChild(sc, repere);
+  apres.forEach(([parent, noeud]) => parent.appendChild(noeud));
+  w.document.dispatchEvent(new w.Event('DOMContentLoaded'));
   w.eval('isOwner = ' + (proprietaire ? 'true' : 'false') + '; isEditor = true; currentUserEmail = ' + JSON.stringify(email) + ';');
   const silence = w.console.log; w.console.log = () => {};
   await w.ensureTables();
