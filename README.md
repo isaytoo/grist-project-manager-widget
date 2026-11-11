@@ -32,7 +32,7 @@ Project management widget for Grist with Kanban board, table view, Gantt chart, 
 
 - **Kanban board**: Drag & drop tasks between columns (To Do, In Progress, Done)
 - **Table view**: Advanced inline editing with search, sort, and filters
-- **Gantt chart**: Timeline visualization with year navigation, zoom levels (days, weeks, months, full year)
+- **Gantt chart**: Timeline with days, weeks, months, 2-year and 10-year views, plus a custom period with zoom +/- from 6 weeks up to 20 years
 - **Task templates**: Create and reuse pre-formatted task models
 - **Task management**: Title, status, priority, assignee, start date, due date
 - **Statistics dashboard**: Total, to do, in progress, completed counts
@@ -111,7 +111,7 @@ Widget de gestion de projets pour Grist avec tableau Kanban, vue tableau, diagra
 
 - **Tableau Kanban** : Glisser-déposer les tâches entre colonnes (À faire, En cours, Terminé)
 - **Vue tableau** : Édition inline avancée avec recherche, tri et filtres
-- **Diagramme de Gantt** : Visualisation timeline avec navigation par année, niveaux de zoom (jours, semaines, mois, année complète)
+- **Diagramme de Gantt** : vues jours, semaines, mois, 2 ans et 10 ans, plus une période libre avec zoom +/- de 6 semaines à 20 ans
 - **Templates de tâches** : Créez et réutilisez des modèles de tâches préformatés
 - **Gestion des tâches** : Titre, statut, priorité, assigné, date de début, échéance
 - **Tableau de bord** : Statistiques total, à faire, en cours, terminées

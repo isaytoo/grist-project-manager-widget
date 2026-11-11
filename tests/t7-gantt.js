@@ -1,5 +1,10 @@
 // Gantt — références figées. Chaque scénario compare le HTML produit à celui
 // enregistré depuis la version d'avant la refonte du rendu (v140).
+//
+// Trois scénarios en ont été retirés en v142, parce que leur comportement a été
+// remplacé à dessein : la vue « Année » (devenue « 10 ans ») et la plage
+// personnalisée de plus de quatre mois (qui change d'échelle au lieu d'être
+// coupée à 400 jours). Ils sont couverts par t8-gantt-zoom.js.
 //   node t7-gantt.js            compare
 //   node t7-gantt.js --ecrire   réécrit les références (à ne faire qu'en connaissance de cause)
 const fs = require('fs'); const path = require('path'); const zlib = require('zlib');
@@ -49,12 +54,9 @@ const SCENARIOS = [
   ['semaines-janvier',      w => { w.ganttMode = 'weeks'; w.ganttYear = 2027; w.ganttMonth = 0; }],
   ['mois',                  w => { w.ganttMode = 'months'; }],
   ['mois-2027',             w => { w.ganttMode = 'months'; w.ganttYear = 2027; }],
-  ['annee',                 w => { w.ganttMode = 'year'; }],
-  ['annee-2027',            w => { w.ganttMode = 'year'; w.ganttYear = 2027; }],
   ['deux-ans',              w => { w.ganttMode = 'twoyears'; }],
   ['personnalise',          w => { w.ganttMode = 'custom'; w.ganttCustomStart = '2026-10-20'; w.ganttCustomEnd = '2026-12-05'; }],
   ['personnalise-invalide', w => { w.ganttMode = 'custom'; w.ganttCustomStart = '2026-12-05'; w.ganttCustomEnd = '2026-10-20'; }],
-  ['personnalise-borne',    w => { w.ganttMode = 'custom'; w.ganttCustomStart = '2026-01-01'; w.ganttCustomEnd = '2028-06-30'; }],
   ['jours-tri-alpha',       w => { w.ganttMode = 'days'; w.ganttSort = 'alpha'; }],
   ['mois-tri-projet',       w => { w.ganttMode = 'months'; w.ganttSort = 'project'; }],
   ['semaines-anglais',      w => { w.ganttMode = 'weeks'; w.currentLang = 'en'; }],
@@ -62,7 +64,8 @@ const SCENARIOS = [
   ['mois-archives',         w => { w.ganttMode = 'months'; w.showArchivedTasks = true; }]
 ];
 
-(async () => {
+module.exports = { baseGantt, MAINTENANT };
+if (require.main === module) (async () => {
   const res = []; const v = (n, ok, det) => res.push([n, ok, det]);
   if (ECRIRE && !fs.existsSync(REF)) fs.mkdirSync(REF);
   for (const [nom, regler] of SCENARIOS) {

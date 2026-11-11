@@ -5,7 +5,7 @@
 // Version affichée à côté du titre et en pied de page. À incrémenter en même
 // temps que le ?v= de index.html : si les deux divergent, l'interface annonce
 // une version que le navigateur n'a pas forcément chargée.
-var WIDGET_VERSION = 'v141';
+var WIDGET_VERSION = 'v142';
 (function () {
   ['widget-version', 'widget-version-footer'].forEach(function (id) {
     var el = document.getElementById(id);
@@ -54,7 +54,7 @@ var i18n = {
     ganttDays: 'Jours',
     ganttWeeks: 'Semaines',
     ganttMonths: 'Mois',
-    ganttYear2: 'Année',
+    ganttYear2: '10 ans',
     ganttTwoYears: '2 Ans',
     ganttSortLabel: 'Trier :',
     ganttSortDefault: 'Défaut',
@@ -397,7 +397,7 @@ var i18n = {
     ganttDays: 'Days',
     ganttWeeks: 'Weeks',
     ganttMonths: 'Months',
-    ganttYear2: 'Year',
+    ganttYear2: '10 years',
     ganttTwoYears: '2 Years',
     ganttSortLabel: 'Sort:',
     ganttSortDefault: 'Default',
@@ -5496,7 +5496,9 @@ function ganttGridWeeks(ctx) {
   };
 }
 
-// ---- Échelle Années (une ou deux années, une colonne par mois) ----
+// ---- Échelle 2 ans (une colonne par mois, barres au mois entier) ----
+// numYears = 1 n'est plus appelé depuis que « Année » est devenu « 10 ans »,
+// mais la fonction reste paramétrée : elle est figée par les tests telle quelle.
 function ganttGridYears(ctx, numYears) {
   var today = ctx.today, monthNamesShort = ctx.monthNamesShort;
   var totalMonths = numYears * 12;
@@ -5670,11 +5672,196 @@ function ganttGridDays(ctx) {
   };
 }
 
+// ---- Échelle libre : semaines, mois ou trimestres sur une période quelconque ----
+// Sert à la vue 10 ans et au zoom de la vue Personnalisé. Les barres y sont
+// placées au jour près, quelle que soit la largeur des colonnes.
+var GANTT_SCALES = {
+  week:    { colW: 60, fr: 'semaines',   en: 'weeks' },
+  month:   { colW: 26, fr: 'mois',       en: 'months' },
+  quarter: { colW: 40, fr: 'trimestres', en: 'quarters' }
+};
+
+function ganttGridScaled(ctx, rangeStart, rangeEnd, unit) {
+  var today = ctx.today, monthNames = ctx.monthNames, fr = currentLang === 'fr';
+  var scale = GANTT_SCALES[unit];
+  var cols = [], d, e;
+  if (unit === 'week') {
+    d = new Date(rangeStart); d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));   // lundi
+    while (d <= rangeEnd) {
+      e = new Date(d); e.setDate(e.getDate() + 6); e.setHours(23, 59, 59, 999);
+      cols.push({ start: new Date(d), end: e, label: (fr ? 'S' : 'W') + getISOWeek(d), group: monthNames[d.getMonth()].toUpperCase() + ' ' + String(d.getFullYear()).substring(2), mark: d.getDate() <= 7 });
+      d.setDate(d.getDate() + 7);
+    }
+  } else {
+    var step = unit === 'quarter' ? 3 : 1;
+    d = new Date(rangeStart.getFullYear(), Math.floor(rangeStart.getMonth() / step) * step, 1);
+    while (d <= rangeEnd) {
+      e = new Date(d.getFullYear(), d.getMonth() + step, 0, 23, 59, 59, 999);
+      cols.push({
+        start: new Date(d), end: e,
+        label: unit === 'quarter' ? (fr ? 'T' : 'Q') + (d.getMonth() / 3 + 1) : monthNames[d.getMonth()].charAt(0).toUpperCase(),
+        tip: unit === 'quarter' ? '' : monthNames[d.getMonth()] + ' ' + d.getFullYear(),
+        group: String(d.getFullYear()), mark: d.getMonth() === 0
+      });
+      d = new Date(d.getFullYear(), d.getMonth() + step, 1);
+    }
+  }
+  var colW = scale.colW;
+  // Peu de colonnes : on les élargit pour ne pas laisser l'écran à moitié vide.
+  var host = document.getElementById('gantt-view');
+  var avail = ((host && host.clientWidth) || 1100) - 236;
+  if (cols.length * colW < avail) colW = Math.min(120, Math.floor(avail / cols.length));
+
+  var todayIdx = -1, todayPct = 0;
+  for (var i = 0; i < cols.length; i++) {
+    if (today >= cols[i].start && today <= cols[i].end) {
+      todayIdx = i;
+      todayPct = Math.round((today - cols[i].start) / (cols[i].end - cols[i].start) * 100);
+      break;
+    }
+  }
+
+  var head = '<thead><tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
+  for (var g = 0; g < cols.length; ) {
+    var span = 1;
+    while (g + span < cols.length && cols[g + span].group === cols[g].group) span++;
+    // Le libellé est bridé à la largeur de ses colonnes : un groupe d'une seule
+    // semaine (« DÉCEMBRE 25 ») élargissait sinon sa colonne et décalait toutes
+    // les barres qui suivent.
+    head += '<th colspan="' + span + '" class="gantt-group' + (cols[g].mark ? ' gantt-mark' : '') + '" title="' + sanitize(cols[g].group) + '">'
+      + '<div style="width:' + (span * colW - 2) + 'px;overflow:hidden;white-space:nowrap;margin:0 auto;">' + sanitize(cols[g].group) + '</div></th>';
+    g += span;
+  }
+  head += '</tr><tr>';
+  var cell = [], line = [];
+  cols.forEach(function(c, k) {
+    var isToday = k === todayIdx;
+    head += '<th' + (isToday ? ' id="gantt-today-col"' : '') + ' class="' + (isToday ? 'today' : '') + (c.mark ? ' gantt-mark' : '') + '"'
+      + (c.tip ? ' title="' + sanitize(c.tip) + '"' : '') + ' style="min-width:' + colW + 'px;">' + sanitize(c.label) + '</th>';
+    cell.push('<td class="gantt-cell' + (isToday ? ' today-col' : '') + (c.mark ? ' gantt-mark' : '') + '" style="position:relative;min-width:' + colW + 'px;">');
+    line.push(isToday ? '<div style="position:absolute;top:0;bottom:0;left:' + todayPct + '%;width:2px;background:#ef4444;z-index:1;pointer-events:none;"></div>' : '');
+  });
+  head += '</tr></thead>';
+
+  var first = cols[0].start, last = cols[cols.length - 1].end;
+  var rangeLabel = (unit === 'week')
+    ? formatDate(Math.floor(first.getTime() / 1000)) + ' – ' + formatDate(Math.floor(last.getTime() / 1000))
+    : (first.getFullYear() === last.getFullYear() ? String(first.getFullYear()) : first.getFullYear() + ' – ' + last.getFullYear());
+  var footer = '<div class="gantt-footer">'
+    + '<span>🌟 ' + (fr ? 'Échelle : ' + scale.fr : 'Scale: ' + scale.en) + ' • ' + ctx.count + ' ' + (fr ? 'tâches' : 'tasks') + '</span>'
+    + '<span>' + t('ganttViewRange') + ' ' + rangeLabel + '</span>'
+    + '</div>';
+
+  // Une tâche d'un jour sur dix ans ferait une barre d'un pixel : on garde de quoi cliquer.
+  function visible(gm) { if (gm && gm.width < 4) gm.width = 4; return gm; }
+  return {
+    cols: cols, colWidth: colW, head: head, footer: footer, tableClass: 'gantt-dense',
+    cellTask: cell, cellSub: cell, lineTask: line, lineSub: line,
+    geom: function(s, en) { return visible(ganttBarGeom(s, en, cols, colW)); },
+    extGeom: function(tEnd, extEnd) { return (extEnd && tEnd && extEnd > tEnd) ? visible(ganttBarGeom(tEnd, extEnd, cols, colW)) : null; }
+  };
+}
+
+// ---- Vue Personnalisé : une période libre, l'échelle s'en déduit ----
+var GANTT_MAX_DAYS = 7305;   // 20 ans
+// Paliers du zoom, en jours : 6 semaines, 3 mois, 6 mois, 1, 2, 5, 10 et 20 ans.
+var GANTT_ZOOM_SPANS = [42, 92, 183, 365, 730, 1826, 3652, GANTT_MAX_DAYS];
+
+function ganttIso(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Période saisie, validée et bornée à 20 ans — ou null si elle est inexploitable.
+function ganttCustomRange() {
+  if (!ganttCustomStart || !ganttCustomEnd) return null;
+  var s = new Date(ganttCustomStart + 'T00:00:00'), e = new Date(ganttCustomEnd + 'T00:00:00');
+  if (isNaN(s.getTime()) || isNaN(e.getTime()) || e < s) return null;
+  var days = Math.round((e - s) / 86400000) + 1;
+  if (days > GANTT_MAX_DAYS) { e = new Date(s); e.setDate(e.getDate() + GANTT_MAX_DAYS - 1); days = GANTT_MAX_DAYS; }
+  return { start: s, end: e, days: days };
+}
+
+// L'échelle suit la longueur de la période : c'est elle qui décide, pas un réglage à part.
+function ganttUnitForSpan(days) {
+  if (days <= 124) return 'day';        // jusqu'à 4 mois
+  if (days <= 731) return 'week';       // jusqu'à 2 ans
+  if (days <= 3653) return 'month';     // jusqu'à 10 ans
+  return 'quarter';
+}
+
+function ganttSetCustomRange(start, end) {
+  ganttCustomStart = ganttIso(start);
+  ganttCustomEnd = ganttIso(end);
+  var sEl = document.getElementById('gantt-custom-start');
+  var eEl = document.getElementById('gantt-custom-end');
+  if (sEl) sEl.value = ganttCustomStart;
+  if (eEl) eEl.value = ganttCustomEnd;
+}
+
+// Période de `days` jours dont le milieu est l'instant `centerMs`.
+function ganttRangeAround(centerMs, days) {
+  // On arrondit au jour le plus proche (midi puis minuit) : un changement d'heure
+  // ne doit pas faire glisser la période d'un jour.
+  var s = new Date(centerMs - (days / 2) * 86400000 + 43200000);
+  s.setHours(0, 0, 0, 0);
+  var e = new Date(s); e.setDate(e.getDate() + days - 1);
+  return { start: s, end: e };
+}
+
+// Milieu exact d'une période, bornes incluses.
+function ganttRangeMiddle(r) {
+  return r.start.getTime() + (r.days / 2) * 86400000;
+}
+
+// Point autour duquel on zoome. Il est fixé au premier zoom et gardé tant qu'on
+// ne fait que zoomer : recalculé à chaque palier, il se décalerait d'un jour ou
+// deux par arrondi, et un aller-retour ne ramènerait pas à la période de départ.
+var ganttZoomAnchor = null;
+
+// dir > 0 : zoom avant (période plus courte, échelle plus fine) ; dir < 0 : zoom arrière.
+function ganttZoom(dir) {
+  var r = ganttCustomRange();
+  if (!r) return;
+  var target = null, i;
+  if (dir > 0) {
+    for (i = GANTT_ZOOM_SPANS.length - 1; i >= 0; i--) if (GANTT_ZOOM_SPANS[i] < r.days) { target = GANTT_ZOOM_SPANS[i]; break; }
+  } else {
+    for (i = 0; i < GANTT_ZOOM_SPANS.length; i++) if (GANTT_ZOOM_SPANS[i] > r.days) { target = GANTT_ZOOM_SPANS[i]; break; }
+  }
+  if (target == null) return;
+  if (ganttZoomAnchor == null) ganttZoomAnchor = ganttRangeMiddle(r);
+  var nr = ganttRangeAround(ganttZoomAnchor, target);
+  ganttSetCustomRange(nr.start, nr.end);
+  ganttPendingCenter = true;
+  renderGanttView();
+}
+
+// Libellé d'échelle et état des boutons de zoom, à côté des dates.
+function ganttUpdateZoomControls() {
+  var label = document.getElementById('gantt-scale-label');
+  var zin = document.getElementById('gantt-zoom-in'), zout = document.getElementById('gantt-zoom-out');
+  var r = ganttCustomRange();
+  var fr = currentLang === 'fr';
+  if (label) {
+    var names = { day: fr ? 'jours' : 'days', week: fr ? 'semaines' : 'weeks', month: fr ? 'mois' : 'months', quarter: fr ? 'trimestres' : 'quarters' };
+    label.textContent = r ? (fr ? 'Échelle : ' : 'Scale: ') + names[ganttUnitForSpan(r.days)] : '';
+  }
+  if (zin) zin.disabled = !r || r.days <= GANTT_ZOOM_SPANS[0];
+  if (zout) zout.disabled = !r || r.days >= GANTT_MAX_DAYS;
+}
+
 function ganttBuildGrid(ctx) {
   if (ganttMode === 'weeks') return ganttGridWeeks(ctx);
-  if (ganttMode === 'year') return ganttGridYears(ctx, 1);
+  // « 10 ans » : l'année choisie au milieu, quatre avant et cinq après.
+  if (ganttMode === 'year') return ganttGridScaled(ctx, new Date(ganttYear - 4, 0, 1), new Date(ganttYear + 5, 11, 31), 'month');
   if (ganttMode === 'twoyears') return ganttGridYears(ctx, 2);
   if (ganttMode === 'months') return ganttGridMonths(ctx);
+  if (ganttMode === 'custom') {
+    var r = ganttCustomRange();
+    var unit = r ? ganttUnitForSpan(r.days) : 'day';
+    if (unit !== 'day') return ganttGridScaled(ctx, r.start, r.end, unit);
+  }
   return ganttGridDays(ctx);
 }
 
@@ -5787,8 +5974,9 @@ function renderGanttView() {
     : ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
   var grid = ganttBuildGrid({ today: today, dayNames: dayNames, monthNamesShort: monthNamesShort, monthNames: monthNames, count: tasksWithDates.length });
+  ganttUpdateZoomControls();
   document.getElementById('gantt-view').innerHTML =
-    '<div class="gantt-container"><table class="gantt-table">' + grid.head + '<tbody>'
+    '<div class="gantt-container"><table class="gantt-table' + (grid.tableClass ? ' ' + grid.tableClass : '') + '">' + grid.head + '<tbody>'
     + ganttRenderRows(tasksWithDates, grid)
     + '</tbody></table>' + grid.footer + '</div>';
   initGanttDragScroll();
@@ -5842,6 +6030,20 @@ function setGanttYear(value) {
 }
 
 function ganttNav(dir) {
+  if (ganttMode === 'custom') {
+    // Les flèches ne faisaient rien dans cette vue : elles déplacent maintenant
+    // la période d'une demi-fenêtre, pour garder un recouvrement.
+    var cr = ganttCustomRange();
+    ganttZoomAnchor = null;
+    if (cr) {
+      var shift = Math.max(1, Math.round(cr.days / 2)) * dir;
+      var ns = new Date(cr.start); ns.setDate(ns.getDate() + shift);
+      var ne = new Date(cr.end); ne.setDate(ne.getDate() + shift);
+      ganttSetCustomRange(ns, ne);
+    }
+    renderGanttView();
+    return;
+  }
   if (ganttMode === 'months' || ganttMode === 'year' || ganttMode === 'twoyears') {
     // Modes annuels : on navigue par année
     ganttYear += dir;
@@ -5865,6 +6067,14 @@ function ganttNav(dir) {
 function ganttToday() {
   ganttYear = new Date().getFullYear();
   ganttMonth = new Date().getMonth();
+  // Vue Personnalisé : même durée, recentrée sur aujourd'hui.
+  var todayRange = ganttMode === 'custom' ? ganttCustomRange() : null;
+  ganttZoomAnchor = null;
+  if (todayRange) {
+    var nowDay = new Date(); nowDay.setHours(12, 0, 0, 0);
+    var around = ganttRangeAround(nowDay.getTime(), todayRange.days);
+    ganttSetCustomRange(around.start, around.end);
+  }
   ganttPendingCenter = true;   // C1 : recentrer sur le jour courant
   renderGanttView();
 }
@@ -5882,6 +6092,7 @@ function ganttCollapseAll() {
 
 function setGanttMode(mode) {
   ganttMode = mode;
+  ganttZoomAnchor = null;
   ganttPendingCenter = true;   // C1 : chaque changement d'echelle recentre sur aujourd'hui
   // A3 : afficher la zone de dates uniquement en mode personnalisé
   var rangeBox = document.getElementById('gantt-custom-range');
@@ -5907,6 +6118,11 @@ function setGanttCustomRange() {
   var eEl = document.getElementById('gantt-custom-end');
   if (sEl) ganttCustomStart = sEl.value;
   if (eEl) ganttCustomEnd = eEl.value;
+  ganttZoomAnchor = null;
+  // Une période de plus de 20 ans est ramenée à 20 : on le montre dans le champ.
+  var bounded = ganttCustomRange();
+  if (bounded && ganttIso(bounded.end) !== ganttCustomEnd) ganttSetCustomRange(bounded.start, bounded.end);
+  ganttPendingCenter = true;
   renderGanttView();
 }
 
@@ -5927,7 +6143,10 @@ async function exportGanttPdf() {
   showToast(currentLang === 'fr' ? 'Génération du PDF...' : 'Generating PDF...', 'info');
   container.classList.add('gantt-exporting');
   try {
-    var canvas = await html2canvas(table, { scale: 2, backgroundColor: '#ffffff', windowWidth: table.scrollWidth, windowHeight: table.scrollHeight });
+    // Sur 10 ou 20 ans le tableau dépasse la taille qu'un navigateur accepte pour
+    // une image : on réduit la finesse plutôt que d'obtenir une page blanche.
+    var pdfScale = Math.max(0.5, Math.min(2, 14000 / Math.max(1, table.scrollWidth), 14000 / Math.max(1, table.scrollHeight)));
+    var canvas = await html2canvas(table, { scale: pdfScale, backgroundColor: '#ffffff', windowWidth: table.scrollWidth, windowHeight: table.scrollHeight });
     container.classList.remove('gantt-exporting');
     var imgData = canvas.toDataURL('image/png');
     var jsPDF = window.jspdf.jsPDF;

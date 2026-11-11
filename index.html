@@ -1767,6 +1767,18 @@
       border-right: 1px solid #f1f5f9;
     }
     .gantt-cell.today-col { background: #fef2f2; }
+    /* Échelles denses (10 ans, zoom arrière) : colonnes étroites, repère au début
+       de chaque année ou de chaque mois pour ne pas se perdre dans la grille. */
+    .gantt-dense th { min-width: 0; padding: 2px 0; }
+    .gantt-dense th.gantt-group { font-size: 11px; font-weight: 800; color: #475569; background: #f8fafc; }
+    .gantt-dense .gantt-mark { border-left: 1px solid #cbd5e1; }
+    .gantt-dense .gantt-bar { min-width: 4px; padding: 0 3px; overflow: hidden; white-space: nowrap; }
+    body.dark-mode .gantt-dense th.gantt-group { background: #0f172a; color: #94a3b8; }
+    body.dark-mode .gantt-dense .gantt-mark { border-left-color: #475569; }
+    .gantt-zoom { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
+    .gantt-zoom button { min-width: 28px; font-weight: 800; }
+    .gantt-zoom button:disabled { opacity: .35; cursor: not-allowed; }
+    .gantt-scale-label { font-size: 12px; color: #64748b; margin-left: 6px; }
     .gantt-cell.weekend-col { background: #fafbfc; }
     .gantt-bar {
       position: absolute;
@@ -4281,7 +4293,7 @@
           <button class="btn-secondary btn-sm active" onclick="setGanttMode('days')" data-gantt-mode="days" data-i18n="ganttDays">Jours</button>
           <button class="btn-secondary btn-sm" onclick="setGanttMode('weeks')" data-gantt-mode="weeks" data-i18n="ganttWeeks">Semaines</button>
           <button class="btn-secondary btn-sm" onclick="setGanttMode('months')" data-gantt-mode="months" data-i18n="ganttMonths">Mois</button>
-          <button class="btn-secondary btn-sm" onclick="setGanttMode('year')" data-gantt-mode="year" data-i18n="ganttYear2">Année</button>
+          <button class="btn-secondary btn-sm" onclick="setGanttMode('year')" data-gantt-mode="year" data-i18n="ganttYear2">10 ans</button>
           <button class="btn-secondary btn-sm" onclick="setGanttMode('twoyears')" data-gantt-mode="twoyears" data-i18n="ganttTwoYears">2 Ans</button>
           <button class="btn-secondary btn-sm" onclick="setGanttMode('custom')" data-gantt-mode="custom" data-i18n="ganttCustom">Personnalisé</button>
         </div>
@@ -4291,6 +4303,11 @@
         <input type="date" id="gantt-custom-start" onchange="setGanttCustomRange()" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;">
         <span style="font-size:12px;color:#64748b;" data-i18n="ganttRangeTo">au :</span>
         <input type="date" id="gantt-custom-end" onchange="setGanttCustomRange()" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;">
+        <span class="gantt-zoom">
+          <button class="btn-secondary btn-sm" id="gantt-zoom-out" onclick="ganttZoom(-1)" title="Zoom arrière : période plus longue">−</button>
+          <button class="btn-secondary btn-sm" id="gantt-zoom-in" onclick="ganttZoom(1)" title="Zoom avant : période plus courte">+</button>
+          <span id="gantt-scale-label" class="gantt-scale-label"></span>
+        </span>
       </div>
       <div id="gantt-view"></div>
     </div>
@@ -4786,7 +4803,7 @@
     </div>
   </div>
 
-  <script src="widget.js?v=141"></script>
+  <script src="widget.js?v=142"></script>
   <footer style="position: fixed; bottom: 0; left: 0; right: 0; background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 4px 12px; font-size: 0.7em; color: #94a3b8; display: flex; justify-content: space-between; z-index: 1000;">
     <span>© 2026 isaytoo · <span id="widget-version-footer"></span></span>
   </footer>
