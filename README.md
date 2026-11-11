@@ -37,6 +37,11 @@ Project management widget for Grist with Kanban board, table view, Gantt chart, 
 - **Task management**: Title, status, priority, assignee, start date, due date
 - **Statistics dashboard**: Total, to do, in progress, completed counts
 - **Search & filter**: By status, priority, and keywords
+- **Multi-select filters**: Role, person, group, category, tag, task health and custom fields — several values per filter
+- **Several tags per task**, and a **task health** sign on the card (☀️ on track, ☁️ at risk, ⛈️ stalled)
+- **Subtasks in the calendar**, unfolded under their task, and a **per-task subtask archive**
+- **Personal default view**: each user saves the tab, filters and sorting they want on opening
+- **Templates with a project and subtasks**; a person can belong to **several groups**
 - **Bilingual interface** (French / English, auto-detected)
 - **🆕 Column mapping system**: Map your own existing Grist tables and columns (see [GUIDE_MAPPING.md](GUIDE_MAPPING.md))
 
@@ -55,6 +60,12 @@ python3 -m http.server 8091
 ```
 
 Then in Grist, use: `http://localhost:8091/index.html`
+
+Tests run the real page and script against an in-memory Grist document:
+
+```bash
+cd tests && npm install && node tout.js
+```
 
 ### ⚙️ Required Configuration
 
@@ -105,6 +116,11 @@ Widget de gestion de projets pour Grist avec tableau Kanban, vue tableau, diagra
 - **Gestion des tâches** : Titre, statut, priorité, assigné, date de début, échéance
 - **Tableau de bord** : Statistiques total, à faire, en cours, terminées
 - **Recherche & filtres** : Par statut, priorité et mots-clés
+- **Filtres à choix multiples** : rôle, personne, groupe, catégorie, tag, météo et champs personnalisés — plusieurs valeurs par filtre
+- **Plusieurs tags par tâche**, et une **météo** affichée sur la carte (☀️ avance bien, ☁️ risque de s'arrêter, ⛈️ arrêtée)
+- **Sous-tâches dans le calendrier**, dépliées sous leur tâche, et une **archive de sous-tâches propre à chaque tâche**
+- **Vue par défaut personnelle** : chacun enregistre l'onglet, les filtres et les tris qu'il veut retrouver à l'ouverture
+- **Modèles avec projet et sous-tâches** ; une personne peut appartenir à **plusieurs groupes**
 - **Interface bilingue** (Français / Anglais, détection automatique)
 - **🆕 Système de mapping de colonnes** : Mappez vos propres tables et colonnes Grist existantes (voir [GUIDE_MAPPING.md](GUIDE_MAPPING.md))
 
@@ -123,6 +139,12 @@ python3 -m http.server 8091
 ```
 
 Puis dans Grist, utilisez : `http://localhost:8091/index.html`
+
+Les tests exécutent la vraie page et le vrai script face à un document Grist tenu en mémoire :
+
+```bash
+cd tests && npm install && node tout.js
+```
 
 ### ⚙️ Configuration requise
 

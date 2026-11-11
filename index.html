@@ -139,6 +139,7 @@
     .project-selector {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 6px;
     }
     .project-active-badge {
@@ -309,7 +310,7 @@
       display: inline-flex; align-items: center; gap: 6px;
       padding: 7px 10px 7px 12px; border: 2px solid #cbd5e1; border-radius: 8px;
       background: white; color: #64748b; font-size: 12px; font-weight: 600;
-      cursor: pointer; min-width: 130px; max-width: 200px; white-space: nowrap;
+      cursor: pointer; min-width: 112px; max-width: 200px; white-space: nowrap;
       overflow: hidden; transition: border-color .15s, box-shadow .15s, background .15s;
       font-family: inherit; user-select: none;
     }
@@ -327,6 +328,72 @@
       z-index: 1000; overflow: hidden; animation: dropdownIn .12s ease;
     }
     .filter-combo-dd.show { display: block; }
+    .filter-combo-dd.fc-wide { min-width: 240px; max-width: 320px; }
+    /* Filtres à choix multiples : case, section par champ, plage de dates */
+    .fc-check { display: inline-block; width: 18px; font-size: 13px; color: #94a3b8; }
+    .filter-combo-opt.selected .fc-check { color: #4f46e5; }
+    .filter-combo-opt.fc-clear { color: #ef4444; font-weight: 600; border-bottom: 1px solid #f1f5f9; }
+    .fc-section {
+      padding: 8px 12px 3px; font-size: 10px; font-weight: 800; letter-spacing: .5px;
+      text-transform: uppercase; color: #94a3b8; border-top: 1px solid #f1f5f9;
+    }
+    .fc-section:first-child { border-top: 0; }
+    .fc-empty { padding: 6px 12px; font-size: 11px; color: #94a3b8; font-style: italic; }
+    .fc-date-row { display: flex; align-items: center; gap: 6px; padding: 4px 12px 8px; color: #94a3b8; }
+    .fc-date-row input {
+      flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid #e2e8f0; border-radius: 6px;
+      font-size: 11px; font-family: inherit;
+    }
+    body.dark-mode .fc-section { color: #64748b; border-color: #334155; }
+    body.dark-mode .filter-combo-opt.fc-clear { border-color: #334155; }
+    body.dark-mode .fc-date-row input { background: #0f172a; border-color: #334155; color: #e2e8f0; }
+    .default-view-btns { display: inline-flex; gap: 2px; }
+
+    /* Sélecteur à étiquettes (tags d'une tâche, groupes d'une personne) */
+    .chip-picker { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+    .chip-picker-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chip-picker-chip {
+      display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px;
+      border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; font-weight: 600; background: #fff;
+    }
+    .chip-picker-x {
+      border: 0; background: transparent; cursor: pointer; font-size: 10px; line-height: 1;
+      padding: 2px 3px; border-radius: 4px; color: inherit; opacity: .6;
+    }
+    .chip-picker-x:hover { opacity: 1; background: rgba(0,0,0,.08); }
+    .chip-picker-add { font-size: 12px; }
+    body.dark-mode .chip-picker-chip { background: #1e293b; }
+
+    /* Météo de la tâche */
+    .health-badge { margin-right: 4px; font-size: 1.05em; }
+
+    /* Archive des sous-tâches, propre à chaque tâche */
+    .subtask-archive { margin-top: 8px; border-top: 1px dashed #e2e8f0; padding-top: 6px; }
+    .subtask-archive-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .subtask-archive-toggle, .subtask-archive-all {
+      border: 0; background: transparent; cursor: pointer; font-family: inherit;
+      font-size: 12px; font-weight: 600; color: #64748b; padding: 4px 6px; border-radius: 6px;
+    }
+    .subtask-archive-toggle:hover, .subtask-archive-all:hover { background: #f1f5f9; color: #334155; }
+    .subtask-archive-all { font-weight: 500; text-decoration: underline; }
+    .subtask-archive-list { margin-top: 4px; }
+    .subtask-item.archived { opacity: .7; }
+    .subtask-item.archived .subtask-title { color: #64748b; }
+    body.dark-mode .subtask-archive { border-color: #334155; }
+    body.dark-mode .subtask-archive-toggle:hover, body.dark-mode .subtask-archive-all:hover { background: #334155; color: #e2e8f0; }
+
+    /* Vue par défaut */
+    .view-help { font-size: 12px; color: #64748b; line-height: 1.5; margin: 0 0 12px; }
+    .view-h { font-size: 12px; font-weight: 800; color: #334155; margin: 14px 0 6px; }
+    .view-summary { border: 1px solid #e2e8f0; border-radius: 10px; padding: 4px 12px; background: #f8fafc; }
+    .view-summary-row { display: flex; gap: 12px; padding: 5px 0; font-size: 12px; border-bottom: 1px solid #eef2f7; }
+    .view-summary-row:last-child { border-bottom: 0; }
+    .view-summary-row span { flex: 0 0 132px; color: #64748b; }
+    .view-summary-row b { flex: 1; min-width: 0; font-weight: 600; color: #1e293b; overflow-wrap: anywhere; }
+    .view-none { font-size: 12px; color: #94a3b8; font-style: italic; padding: 8px 0; }
+    body.dark-mode .view-summary { background: #0f172a; border-color: #334155; }
+    body.dark-mode .view-summary-row { border-color: #1e293b; }
+    body.dark-mode .view-summary-row b, body.dark-mode .view-h { color: #e2e8f0; }
     .filter-combo-search { padding: 8px; border-bottom: 1px solid #f1f5f9; }
     .filter-combo-search input {
       width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid #e2e8f0;
@@ -1415,6 +1482,34 @@
       content: '●';
       color: #ef4444;
       margin-right: 3px;
+    }
+    /* Sous-tâches dans le calendrier */
+    .day-task-toggle {
+      display: inline-block; margin-right: 4px; padding: 0 3px; border-radius: 3px;
+      font-size: 9px; font-weight: 800; background: rgba(0,0,0,.1); cursor: pointer;
+    }
+    .day-task-toggle:hover { background: rgba(0,0,0,.2); }
+    /* Tâche présente ce jour-là seulement par ses sous-tâches : en pointillé */
+    .day-task.via-subtask { background: transparent !important; border: 1px dashed currentColor; opacity: .85; }
+    .day-subtask {
+      margin-left: 10px; padding: 2px 6px; border-left: 2px solid #cbd5e1; border-radius: 0 4px 4px 0;
+      font-size: 10px; color: #475569; background: #f8fafc; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .day-subtask.done { text-decoration: line-through; color: #94a3b8; }
+    .day-subtask.milestone { border-left-color: #7c3aed; color: #6d28d9; }
+    .calendar-days.week-view .day-subtask { white-space: normal; overflow-wrap: anywhere; }
+    .day-subtask-item.on-day { font-weight: 700; }
+    .day-subtask-item.on-day::after { content: '📌'; font-size: 10px; margin-left: 4px; }
+    body.dark-mode .day-subtask { background: #0f172a; color: #94a3b8; border-left-color: #475569; }
+    /* En grille compacte les tâches sont réduites à des points : pas de sous-tâches */
+    .cal-compact .day-subtask, .cal-compact .day-task-toggle { display: none; }
+    .cal-compact .calendar-mobile-list .day-subtask { display: block; }
+    .cal-compact .calendar-mobile-list .day-task-toggle { display: inline-block; }
+    @media (max-width: 768px) {
+      .calendar-container .day-subtask, .calendar-container .day-task-toggle { display: none; }
+      .calendar-mobile-list .day-subtask { display: block; }
+      .calendar-mobile-list .day-task-toggle { display: inline-block; }
     }
     .day-more {
       font-size: 9px;
@@ -4085,7 +4180,7 @@
           <button class="tab-btn" data-tab="team" onclick="switchTab('team')">👥 <span data-i18n="tabTeam">Équipe</span></button>
           <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙️ <span data-i18n="tabSettings">Paramètres</span></button>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div id="project-selector" class="project-selector"></div>
           <button class="btn-new-project" onclick="openProjectModal()">+ <span data-i18n="newProject">Nouveau projet</span></button>
           <button class="btn-new-task" onclick="openNewTaskModal()">+ <span data-i18n="newTask">Nouvelle tâche</span></button>
@@ -4691,7 +4786,7 @@
     </div>
   </div>
 
-  <script src="widget.js?v=139"></script>
+  <script src="widget.js?v=140"></script>
   <footer style="position: fixed; bottom: 0; left: 0; right: 0; background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 4px 12px; font-size: 0.7em; color: #94a3b8; display: flex; justify-content: space-between; z-index: 1000;">
     <span>© 2026 isaytoo · <span id="widget-version-footer"></span></span>
   </footer>

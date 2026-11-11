@@ -1,0 +1,11 @@
+{
+  "name": "grist-project-manager-widget-tests",
+  "private": true,
+  "description": "Tests jsdom du widget : la vraie page et le vrai script, face à un document Grist en mémoire.",
+  "scripts": {
+    "test": "node tout.js"
+  },
+  "dependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

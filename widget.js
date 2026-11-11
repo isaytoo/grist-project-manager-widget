@@ -5,7 +5,7 @@
 // Version affichée à côté du titre et en pied de page. À incrémenter en même
 // temps que le ?v= de index.html : si les deux divergent, l'interface annonce
 // une version que le navigateur n'a pas forcément chargée.
-var WIDGET_VERSION = 'v139';
+var WIDGET_VERSION = 'v140';
 (function () {
   ['widget-version', 'widget-version-footer'].forEach(function (id) {
     var el = document.getElementById(id);
@@ -752,10 +752,16 @@ var categories = [];
 var tags = [];
 var projects = [];
 var currentProjectId = null; // null = all projects
-var currentFilterRole = null;
-var currentFilterAssignee = null; // user Name
-var currentFilterCategory = null;
-var currentFilterTag = null;
+// Filtres : un tableau par critère, vide = pas de filtre. À l'intérieur d'un
+// critère les valeurs s'additionnent (l'une OU l'autre) ; entre critères elles se
+// croisent (l'un ET l'autre).
+var currentFilterRoles = [];
+var currentFilterAssignees = [];   // identifiants de personne (email, à défaut nom)
+var currentFilterCategories = [];
+var currentFilterTags = [];
+var currentFilterGroups = [];
+var currentFilterHealths = [];
+var currentFilterCustom = {};      // id de champ -> [valeurs] ; champ date -> { from, to }
 var mineOnly = false; // "Mes projets" : projets créés par moi OU où je suis assigné
 var activeTimers = {}; // taskId -> startTime (for running timers)
 var kanbanGroupBy = 'status'; // 'status' | 'priority' | 'project'
@@ -806,7 +812,7 @@ function getStatusLabel(key) {
   return key;
 }
 
-var defaultCardDisplay = { description: true, priority: true, date: true, assignee: true, tags: true, category: true, time: true, subtasks: true, comments: true };
+var defaultCardDisplay = { description: true, priority: true, date: true, assignee: true, tags: true, category: true, time: true, subtasks: true, comments: true, health: true };
 var cardDisplaySettings = Object.assign({}, defaultCardDisplay);
 async function saveCardDisplaySettings() {
   await saveSetting('card_display', JSON.stringify(cardDisplaySettings));
@@ -839,6 +845,8 @@ async function loadSettings() {
     if (_settingsCache.raci_enabled) {
       raciEnabled = _settingsCache.raci_enabled.value === 'true';
     }
+    // kanban_sort : ancien réglage partagé. Il ne sert plus que de valeur de
+    // départ à qui n'a encore rien choisi (voir restoreViewPrefs).
     if (_settingsCache.kanban_sort) {
       kanbanSort = _settingsCache.kanban_sort.value || 'manual';
     }
@@ -898,6 +906,8 @@ var SETTINGS_TABLE = 'PM_Settings';
 var NOTIFICATIONS_TABLE = 'PM_Notifications';
 var ACTIVITY_LOG_TABLE = 'PM_ActivityLog';
 var ATTACHMENTS_TABLE = 'PM_Attachments';
+var USER_VIEWS_TABLE = 'PM_UserViews';   // vue par défaut de chaque utilisateur
+var userViews = [];
 var attachments = [];
 var activityLog = [];
 
@@ -1090,6 +1100,104 @@ function userRoleDisplay(u) {
   return roles.length ? roles.join(', ') : '';
 }
 
+// --- Listes séparées par des virgules ---------------------------------------
+// Assignés, tags et groupes d'une personne sont stockés en texte « a, b, c ».
+function splitList(v) {
+  return String(v == null ? '' : v).split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+}
+function taskTags(task) { return splitList(task && task.Tag); }
+function getUserGroups(u) { return splitList(u && u.Group_Name); }
+function userInGroup(u, groupName) { return getUserGroups(u).indexOf(groupName) !== -1; }
+
+// --- Sélecteur à étiquettes ---------------------------------------------------
+// Une liste déroulante pour ajouter, des étiquettes pour retirer, et un champ
+// caché portant la valeur « a, b, c » : le reste du code continue de lire
+// document.getElementById(id).value, comme avec l'ancien <select> à valeur unique.
+var _chipPickers = {};
+function renderChipPicker(id, options, selected, placeholder) {
+  _chipPickers[id] = { options: options || [], selected: (selected || []).slice(), placeholder: placeholder || '--' };
+  return '<div class="chip-picker" id="cp-' + id + '">' + chipPickerInner(id) + '</div>';
+}
+function chipPickerInner(id) {
+  var p = _chipPickers[id];
+  var h = '<input type="hidden" id="' + id + '" value="' + sanitize(p.selected.join(', ')) + '">';
+  if (p.selected.length) {
+    h += '<div class="chip-picker-chips">';
+    p.selected.forEach(function(v, i) {
+      var o = p.options.find(function(x) { return x.value === v; });
+      var c = (o && o.color) || '#64748b';
+      // Une valeur absente de la liste (tag supprimé depuis) reste affichée :
+      // la masquer reviendrait à l'effacer à l'enregistrement suivant.
+      h += '<span class="chip-picker-chip" style="border-color:' + c + '66;color:' + c + ';">' + sanitize(o ? o.label : v)
+        + '<button type="button" class="chip-picker-x" onclick="chipPickerRemove(\'' + id + '\',' + i + ')" title="' + (currentLang === 'fr' ? 'Retirer' : 'Remove') + '">✕</button></span>';
+    });
+    h += '</div>';
+  }
+  var rest = p.options.filter(function(o) { return p.selected.indexOf(o.value) === -1; });
+  if (rest.length) {
+    h += '<select class="chip-picker-add" onchange="chipPickerAdd(\'' + id + '\', this.value)">';
+    h += '<option value="">' + sanitize(p.placeholder) + '</option>';
+    rest.forEach(function(o) { h += '<option value="' + sanitize(o.value) + '">' + sanitize(o.label) + '</option>'; });
+    h += '</select>';
+  }
+  return h;
+}
+function chipPickerRefresh(id) {
+  var box = document.getElementById('cp-' + id);
+  if (box) box.innerHTML = chipPickerInner(id);
+}
+function chipPickerAdd(id, value) {
+  var p = _chipPickers[id];
+  if (!p || !value || p.selected.indexOf(value) !== -1) return;
+  p.selected.push(value);
+  chipPickerRefresh(id);
+}
+function chipPickerRemove(id, index) {
+  var p = _chipPickers[id];
+  if (!p) return;
+  p.selected.splice(index, 1);
+  chipPickerRefresh(id);
+}
+
+// --- Météo d'une tâche ----------------------------------------------------------
+// Un signe lisible sur la carte sans l'ouvrir : avance bien, risque de
+// s'arrêter, arrêtée. Sans rapport avec le statut : une tâche « en cours » peut
+// très bien être à l'arrêt.
+var HEALTH_STATES = [
+  { key: 'good',    emoji: '☀️', fr: 'Avance bien',          en: 'On track' },
+  { key: 'risk',    emoji: '☁️', fr: 'Risque de s\'arrêter', en: 'At risk' },
+  { key: 'blocked', emoji: '⛈️', fr: 'Arrêtée',              en: 'Stalled' }
+];
+// La colonne est ajoutée par migration ; tant qu'elle manque (document ouvert par
+// quelqu'un qui n'a pas le droit de modifier la structure), on n'écrit pas dedans :
+// une colonne inconnue ferait échouer tout l'enregistrement de la tâche.
+var hasHealthColumn = false;
+var hasSubtaskArchiveColumn = false;
+var hasTemplateExtras = false;   // PM_Templates porte Project_Id et Subtasks
+
+// Sous-tâches d'un modèle : une par ligne, lignes vides ignorées.
+function templateSubtasks(tpl) {
+  return String((tpl && tpl.Subtasks) || '').split(/\r?\n/).map(function(s) { return s.trim(); }).filter(Boolean);
+}
+function healthDef(key) {
+  return HEALTH_STATES.find(function(h) { return h.key === key; }) || null;
+}
+function healthLabel(h) { return currentLang === 'fr' ? h.fr : h.en; }
+function healthBadge(task) {
+  var h = healthDef(task && task.Health);
+  return h ? '<span class="health-badge" title="' + sanitize(healthLabel(h)) + '">' + h.emoji + '</span>' : '';
+}
+function setTaskHealth(value, btn) {
+  var hidden = document.getElementById('task-health');
+  if (!hidden) return;
+  // Recliquer sur l'état actif le retire : « non renseigné » reste un choix.
+  hidden.value = (hidden.value === value) ? '' : value;
+  var grp = btn && btn.parentNode;
+  if (grp) grp.querySelectorAll('.st-pill').forEach(function(p) {
+    p.classList.toggle('active-progress', p.getAttribute('data-health') === hidden.value);
+  });
+}
+
 function formatDate(d) {
   if (!d) return '';
   var date = new Date(d * 1000); // Grist stores dates as epoch seconds
@@ -1122,9 +1230,11 @@ function isOverdue(task) {
   return task.Due_Date < now;
 }
 
-function getTaskSubtasks(taskId) {
+function getTaskSubtasks(taskId, archivedOnly) {
   // D1 : tri par échéance croissante (sans date en dernier), Order en départage
-  return subtasks.filter(function(st) { return st.Parent_Task_Id === taskId; })
+  // Les sous-tâches archivées sortent de tout : avancement, Gantt, tableau,
+  // calendrier. On ne les retrouve que dans l'archive de leur tâche.
+  return subtasks.filter(function(st) { return st.Parent_Task_Id === taskId && !!st.Archived === !!archivedOnly; })
     .sort(function(a, b) {
       var da = a.Due_Date || null;
       var db = b.Due_Date || null;
@@ -1788,7 +1898,8 @@ async function ensureTables() {
           { id: 'Tag', type: 'Text' },
           { id: 'Recurrence', type: 'Choice', widgetOptions: JSON.stringify({ choices: ['none', 'daily', 'weekly', 'monthly'] }) },
           { id: 'Estimated_Hours', type: 'Numeric' },
-          { id: 'Created_At', type: 'Date' }
+          { id: 'Created_At', type: 'Date' },
+          { id: 'Health', type: 'Choice', widgetOptions: JSON.stringify({ choices: ['good', 'risk', 'blocked'] }) }
         ]]
       ]);
     }
@@ -1984,6 +2095,9 @@ async function ensureTables() {
       if (tplCols.indexOf('Group_Name') === -1) tplMig.push(['AddColumn', TEMPLATES_TABLE, 'Group_Name', { type: 'Text' }]);
       if (tplCols.indexOf('Tag') === -1) tplMig.push(['AddColumn', TEMPLATES_TABLE, 'Tag', { type: 'Text' }]);
       if (tplCols.indexOf('Recurrence') === -1) tplMig.push(['AddColumn', TEMPLATES_TABLE, 'Recurrence', { type: 'Text' }]);
+      // Projet de rattachement et sous-tâches à créer avec la tâche (une par ligne)
+      if (tplCols.indexOf('Project_Id') === -1) tplMig.push(['AddColumn', TEMPLATES_TABLE, 'Project_Id', { type: 'Int' }]);
+      if (tplCols.indexOf('Subtasks') === -1) tplMig.push(['AddColumn', TEMPLATES_TABLE, 'Subtasks', { type: 'Text' }]);
       if (tplMig.length) { await grist.docApi.applyUserActions(tplMig); console.log('[GristPM] Colonnes templates enrichies'); }
     } catch (e) {
       console.log('[GristPM] Migration templates ignorée :', e.message);
@@ -2104,6 +2218,20 @@ async function ensureTables() {
       ]);
     }
 
+    // Vue par défaut par utilisateur. Dans le document plutôt que dans le seul
+    // navigateur : elle suit la personne d'un poste à l'autre.
+    if (existingTables.indexOf(USER_VIEWS_TABLE) === -1) {
+      try {
+        await grist.docApi.applyUserActions([
+          ['AddTable', USER_VIEWS_TABLE, [
+            { id: 'User_Email', type: 'Text' },
+            { id: 'View_Json', type: 'Text' },
+            { id: 'Updated_At', type: 'Date' }
+          ]]
+        ]);
+      } catch (e) { console.log('[GristPM] PM_UserViews non créée :', e.message); }
+    }
+
     // Migration: Add missing columns to existing PM_Tasks table
     if (existingTables.indexOf(TASKS_TABLE) !== -1) {
       try {
@@ -2142,6 +2270,10 @@ async function ensureTables() {
         }
         if (existingCols.indexOf('Auto_Extend') === -1) {
           await grist.docApi.applyUserActions([['AddColumn', TASKS_TABLE, 'Auto_Extend', { type: 'Bool' }]]);
+        }
+        // Météo de la tâche (avance bien / risque / arrêtée)
+        if (existingCols.indexOf('Health') === -1) {
+          await grist.docApi.applyUserActions([['AddColumn', TASKS_TABLE, 'Health', { type: 'Choice', widgetOptions: JSON.stringify({ choices: ['good', 'risk', 'blocked'] }) }]]);
         }
       } catch (migrationErr) {
         console.log('Migration check completed or columns already exist');
@@ -2184,6 +2316,11 @@ async function ensureTables() {
         // B2 : type de sous-tâche (sous-tâche classique ou jalon)
         if (stCols.indexOf('Type') === -1) {
           stActions.push(['AddColumn', SUBTASKS_TABLE, 'Type', { type: 'Choice', widgetOptions: JSON.stringify({ choices: ['subtask', 'milestone'] }) }]);
+        }
+        // Archive propre à chaque tâche. Une colonne à part, et non le statut
+        // « archived » : la sous-tâche restaurée retrouve ainsi son statut d'origine.
+        if (stCols.indexOf('Archived') === -1) {
+          stActions.push(['AddColumn', SUBTASKS_TABLE, 'Archived', { type: 'Bool' }]);
         }
         if (stActions.length > 0) {
           await grist.docApi.applyUserActions(stActions);
@@ -2232,6 +2369,7 @@ async function loadAllData() {
   try {
     var taskData = await grist.docApi.fetchTable(TASKS_TABLE);
     tasks = [];
+    hasHealthColumn = !!(taskData && taskData.Health);
     if (taskData && taskData.id) {
       for (var i = 0; i < taskData.id.length; i++) {
         var task = { id: taskData.id[i] };
@@ -2272,6 +2410,7 @@ async function loadAllData() {
         task.Informed = taskData.Informed ? taskData.Informed[i] || '' : '';
         task.Extension_Date = taskData.Extension_Date ? taskData.Extension_Date[i] : null;
         task.Auto_Extend = taskData.Auto_Extend ? !!taskData.Auto_Extend[i] : false;
+        task.Health = taskData.Health ? (taskData.Health[i] || '') : '';
 
         tasks.push(task);
       }
@@ -2305,6 +2444,22 @@ async function loadAllData() {
   }
 
   try {
+    var uvData = await grist.docApi.fetchTable(USER_VIEWS_TABLE);
+    userViews = [];
+    if (uvData && uvData.id) {
+      for (var i = 0; i < uvData.id.length; i++) {
+        userViews.push({
+          id: uvData.id[i],
+          User_Email: uvData.User_Email ? uvData.User_Email[i] : '',
+          View_Json: uvData.View_Json ? uvData.View_Json[i] : ''
+        });
+      }
+    }
+  } catch (e) {
+    userViews = [];
+  }
+
+  try {
     var groupData = await grist.docApi.fetchTable(GROUPS_TABLE);
     groups = [];
     if (groupData && groupData.id) {
@@ -2323,6 +2478,7 @@ async function loadAllData() {
   try {
     var tplData = await grist.docApi.fetchTable(TEMPLATES_TABLE);
     templates = [];
+    hasTemplateExtras = !!(tplData && tplData.Project_Id && tplData.Subtasks);
     if (tplData && tplData.id) {
       for (var i = 0; i < tplData.id.length; i++) {
         templates.push({
@@ -2336,6 +2492,8 @@ async function loadAllData() {
           Tag: tplData.Tag ? tplData.Tag[i] : '',
           Recurrence: tplData.Recurrence ? tplData.Recurrence[i] : 'none',
           Usage_Count: tplData.Usage_Count ? tplData.Usage_Count[i] : 0,
+          Project_Id: tplData.Project_Id ? (tplData.Project_Id[i] || 0) : 0,
+          Subtasks: tplData.Subtasks ? (tplData.Subtasks[i] || '') : '',
           Updated_At: tplData.Updated_At ? tplData.Updated_At[i] : null
         });
       }
@@ -2347,6 +2505,7 @@ async function loadAllData() {
   try {
     var subtaskData = await grist.docApi.fetchTable(SUBTASKS_TABLE);
     subtasks = [];
+    hasSubtaskArchiveColumn = !!(subtaskData && subtaskData.Archived);
     if (subtaskData && subtaskData.id) {
       for (var i = 0; i < subtaskData.id.length; i++) {
         subtasks.push({
@@ -2365,6 +2524,7 @@ async function loadAllData() {
           Estimated_Hours: subtaskData.Estimated_Hours ? subtaskData.Estimated_Hours[i] : null,
           Recurrence: subtaskData.Recurrence ? subtaskData.Recurrence[i] : 'none',
           Type: subtaskData.Type ? subtaskData.Type[i] : 'subtask',
+          Archived: subtaskData.Archived ? !!subtaskData.Archived[i] : false,
           Created_At: subtaskData.Created_At ? subtaskData.Created_At[i] : null
         });
       }
@@ -2611,15 +2771,15 @@ function renderProjectSelector() {
   var container = document.getElementById('project-selector');
   if (!container) return;
 
-  // Rôles disponibles (distincts, triés) — supports ChoiceList arrays
-  var roleSet = {};
-  users.forEach(function(u) { getUserRoles(u).forEach(function(r) { if (r) roleSet[r] = true; }); });
-  var roles = Object.keys(roleSet).sort();
-
-  // Personnes visibles selon le rôle sélectionné
-  var visibleUsers = currentFilterRole
-    ? users.filter(function(u) { return userMatchesRole(u, currentFilterRole); })
-    : users;
+  // Reconstruire le bandeau referme la liste ouverte : on note laquelle, ce qui
+  // y était tapé et où elle en était, pour la rouvrir telle quelle. Sans cela il
+  // faudrait rouvrir la liste après chaque case cochée.
+  var keepOpen = null;
+  if (_openFilterCombo) {
+    var _ks = document.getElementById('fc-search-' + _openFilterCombo);
+    var _kl = document.getElementById('fc-list-' + _openFilterCombo);
+    keepOpen = { id: _openFilterCombo, q: _ks ? _ks.value : '', top: _kl ? _kl.scrollTop : 0 };
+  }
 
   // Projets visibles
   var visibleProjects = projects;
@@ -2627,9 +2787,9 @@ function renderProjectSelector() {
     var myIds = myProjectIdSet();
     visibleProjects = projects.filter(function (p) { return myIds[p.id]; });
   }
-  if (currentFilterAssignee) {
+  if (currentFilterAssignees.length) {
     var projIdSet = {};
-    var selIdentSet = personIdentSet(currentFilterAssignee);
+    var selIdentSet = personsIdentSet(currentFilterAssignees);
     tasks.forEach(function(t) {
       if (!t.Project_Id) return;
       if (assigneeListHas(t.Assignee, selIdentSet)) projIdSet[t.Project_Id] = true;
@@ -2640,30 +2800,14 @@ function renderProjectSelector() {
   }
 
   var html = '';
-
-  // Filtre Rôle
-  var roleOptions = roles.map(function(r) { return { value: r, label: roleLabel(r) }; });
-  html += buildFilterCombo('role', currentLang === 'fr' ? '— Rôle —' : '— Role —', roleOptions, currentFilterRole, filterByRole);
-
-  // Filtre Personne
-  var personOptions = [];
-  visibleUsers.forEach(function(u) {
-    var val = u.Email || u.Name;
-    var label = u.Name || u.Email;
-    if (val) personOptions.push({ value: val, label: label });
-  });
-  html += buildFilterCombo('person', currentLang === 'fr' ? '— Personne —' : '— Person —', personOptions, currentFilterAssignee, filterByAssignee);
-
-  // Filtre Catégorie
-  var allCategories = [];
-  tasks.forEach(function(t) { if (t.Category && allCategories.indexOf(t.Category) === -1) allCategories.push(t.Category); });
-  allCategories.sort();
-  var catOptions = allCategories.map(function(c) { return { value: c, label: c }; });
-  html += buildFilterCombo('category', currentLang === 'fr' ? '— Catégorie —' : '— Category —', catOptions, currentFilterCategory, filterByCategory);
-
-  // Filtre Tag
-  var tagOptions = tags.map(function(tag) { return { value: tag.Name, label: tag.Name }; });
-  html += buildFilterCombo('tag', '— Tag —', tagOptions, currentFilterTag, filterByTag);
+  var _fr = currentLang === 'fr';
+  html += buildMultiCombo('role', _fr ? 'Rôle' : 'Role', filterOptions('role'), currentFilterRoles);
+  html += buildMultiCombo('person', _fr ? 'Personne' : 'Person', filterOptions('person'), currentFilterAssignees);
+  if (groups.length) html += buildMultiCombo('group', _fr ? 'Groupe' : 'Group', filterOptions('group'), currentFilterGroups);
+  html += buildMultiCombo('category', _fr ? 'Catégorie' : 'Category', filterOptions('category'), currentFilterCategories);
+  html += buildMultiCombo('tag', 'Tag', filterOptions('tag'), currentFilterTags);
+  if (hasHealthColumn) html += buildMultiCombo('health', _fr ? 'Météo' : 'Health', filterOptions('health'), currentFilterHealths);
+  html += buildCustomFieldsCombo();
 
   // Filtre Projet — combobox moderne avec recherche intégrée
   var selProj = currentProjectId ? projects.find(function(p) { return p.id === currentProjectId; }) : null;
@@ -2715,7 +2859,14 @@ function renderProjectSelector() {
     html += '<button class="btn-icon" onclick="toggleMyProjects()" title="' + (currentLang === 'fr' ? 'Mes projets : créés par moi ou qui me sont assignés' : 'My projects: created by or assigned to me') + '" style="width:auto;padding:0 12px;font-size:12px;font-weight:600;' + (mineOnly ? 'background:#6366f1;color:#fff;border-color:#6366f1;' : '') + '">👤 ' + (currentLang === 'fr' ? 'Mes projets' : 'My projects') + '</button>';
   }
 
-  if (currentFilterRole || currentFilterAssignee || currentFilterCategory || currentFilterTag || currentProjectId || mineOnly) {
+  // Vue par défaut de l'utilisateur : un clic la rappelle, la flèche la règle.
+  var _hasDefault = !!getMyDefaultView();
+  html += '<span class="default-view-btns">';
+  html += '<button class="btn-icon" onclick="applyMyDefaultView()" title="' + (_fr ? (_hasDefault ? 'Revenir à ma vue par défaut' : 'Définir ma vue par défaut') : (_hasDefault ? 'Back to my default view' : 'Set my default view')) + '" style="width:auto;padding:0 10px;font-size:12px;font-weight:600;' + (_hasDefault ? 'color:#b45309;border-color:#fcd34d;background:#fffbeb;' : '') + '">' + (_hasDefault ? '⭐' : '☆') + ' ' + (_fr ? 'Ma vue' : 'My view') + '</button>';
+  html += '<button class="btn-icon" onclick="openDefaultViewModal()" title="' + (_fr ? 'Régler ma vue par défaut' : 'Configure my default view') + '" style="width:26px;">▾</button>';
+  html += '</span>';
+
+  if (anyFilterActive()) {
     html += '<button class="btn-icon" onclick="resetFilters()" title="' + (currentLang === 'fr' ? 'Réinitialiser les filtres' : 'Reset filters') + '" style="color:#ef4444;">✕</button>';
   }
 
@@ -2730,47 +2881,261 @@ function renderProjectSelector() {
     var appEl = document.querySelector('.app-container') || document.body;
     appEl.insertBefore(banner, appEl.firstChild);
   }
-  if (currentFilterRole || currentFilterAssignee || currentFilterCategory || currentFilterTag || currentProjectId || mineOnly) {
+  if (anyFilterActive()) {
     var proj2 = currentProjectId ? projects.find(function(p) { return p.id === currentProjectId; }) : null;
     var c2 = (proj2 && proj2.Color) ? proj2.Color : '#6366f1';
-    var bits = [];
-    if (mineOnly) bits.push('👤 ' + (currentLang === 'fr' ? 'Mes projets' : 'My projects'));
-    if (currentFilterRole) bits.push('👔 ' + sanitize(roleLabel(currentFilterRole)));
-    if (currentFilterAssignee) {
-      var u = findUserByIdent(currentFilterAssignee);
-      var displayName = u ? (u.Name || u.Email) : currentFilterAssignee;
-      bits.push('👤 ' + sanitize(displayName));
-    }
-    if (currentFilterCategory) bits.push('📁 ' + sanitize(currentFilterCategory));
-    if (currentFilterTag) bits.push('🏷️ ' + sanitize(currentFilterTag));
-    if (proj2) bits.push('🎯 ' + sanitize(proj2.Name));
+    var bits = describeFilters({ filters: filtersSnapshot(), projectId: currentProjectId, mineOnly: mineOnly });
     banner.innerHTML = (currentLang === 'fr' ? 'Filtres actifs : ' : 'Active filters: ') + '<strong>' + bits.join(' › ') + '</strong> — <a href="#" onclick="resetFilters();return false;" style="color:inherit;text-decoration:underline;">' + (currentLang === 'fr' ? 'Tout effacer' : 'Clear all') + '</a>';
     banner.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 16px;background:' + c2 + '15;border-bottom:2px solid' + c2 + ';color:' + c2 + ';font-size:12px;font-weight:600;';
   } else {
     banner.style.display = 'none';
   }
+
+  if (keepOpen) reopenFilterCombo(keepOpen);
 }
 
-function buildFilterCombo(id, placeholder, options, selectedValue, onSelect) {
-  var selOpt = options.find(function(o) { return o.value === selectedValue; });
-  var label = selOpt ? selOpt.label : placeholder;
-  var isActive = !!selectedValue;
-  var h = '<div class="filter-combo" id="fc-' + id + '">';
-  h += '<button type="button" class="filter-combo-btn' + (isActive ? ' active' : '') + '" onclick="toggleFilterCombo(\'' + id + '\')" id="fc-btn-' + id + '">';
-  h += '<span class="filter-combo-label">' + sanitize(label) + '</span>';
+// ---------------------------------------------------------------------------
+// Filtres à choix multiples
+// ---------------------------------------------------------------------------
+
+var FILTER_KINDS = ['role', 'person', 'group', 'category', 'tag', 'health'];
+function filterValues(kind) {
+  switch (kind) {
+    case 'role': return currentFilterRoles;
+    case 'person': return currentFilterAssignees;
+    case 'group': return currentFilterGroups;
+    case 'category': return currentFilterCategories;
+    case 'tag': return currentFilterTags;
+    case 'health': return currentFilterHealths;
+  }
+  return [];
+}
+function setFilterValues(kind, arr) {
+  arr = arr || [];
+  switch (kind) {
+    case 'role': currentFilterRoles = arr; break;
+    case 'person': currentFilterAssignees = arr; break;
+    case 'group': currentFilterGroups = arr; break;
+    case 'category': currentFilterCategories = arr; break;
+    case 'tag': currentFilterTags = arr; break;
+    case 'health': currentFilterHealths = arr; break;
+  }
+}
+
+function customFilterActive(fieldId) {
+  var f = currentFilterCustom[fieldId];
+  if (!f) return false;
+  if (Array.isArray(f)) return f.length > 0;
+  return !!(f.from || f.to);
+}
+function anyCustomFilterActive() {
+  return Object.keys(currentFilterCustom).some(customFilterActive);
+}
+function anyFilterActive() {
+  return FILTER_KINDS.some(function(k) { return filterValues(k).length > 0; })
+    || anyCustomFilterActive() || !!currentProjectId || mineOnly;
+}
+
+// Personnes proposées : celles qui ont l'un des rôles ET l'un des groupes choisis.
+function usersForPersonFilter() {
+  return users.filter(function(u) {
+    if (currentFilterRoles.length && !currentFilterRoles.some(function(r) { return userMatchesRole(u, r); })) return false;
+    if (currentFilterGroups.length && !currentFilterGroups.some(function(g) { return userInGroup(u, g); })) return false;
+    return true;
+  });
+}
+
+// Identifiants (email et nom) de plusieurs personnes à la fois
+function personsIdentSet(list) {
+  var set = {};
+  (list || []).forEach(function(v) {
+    var one = personIdentSet(v);
+    Object.keys(one).forEach(function(k) { set[k] = true; });
+  });
+  return set;
+}
+
+function sortByLabel(opts) {
+  return opts.sort(function(a, b) {
+    return String(a.label).localeCompare(String(b.label), currentLang === 'fr' ? 'fr' : 'en', { sensitivity: 'base', numeric: true });
+  });
+}
+
+// Valeurs proposées par chaque filtre, par ordre alphabétique.
+function filterOptions(kind) {
+  var seen = {}, out = [];
+  function add(value, label) {
+    if (value == null || value === '' || seen[value]) return;
+    seen[value] = true; out.push({ value: String(value), label: String(label == null ? value : label) });
+  }
+  if (kind === 'role') {
+    users.forEach(function(u) { getUserRoles(u).forEach(function(r) { add(r, roleLabel(r)); }); });
+  } else if (kind === 'person') {
+    usersForPersonFilter().forEach(function(u) { add(u.Email || u.Name, u.Name || u.Email); });
+  } else if (kind === 'group') {
+    groups.forEach(function(g) { add(g.Name); });
+  } else if (kind === 'category') {
+    tasks.forEach(function(t) { add(String(t.Category || '').trim()); });
+  } else if (kind === 'tag') {
+    tags.forEach(function(tg) { add(String(tg.Name || '').trim()); });
+    // Un tag encore porté par une tâche mais retiré de la liste reste filtrable.
+    tasks.forEach(function(t) { taskTags(t).forEach(function(x) { add(x); }); });
+  } else if (kind === 'health') {
+    // Ordre voulu, du plus grave au plus serein : pas d'ordre alphabétique ici.
+    return HEALTH_STATES.slice().reverse().map(function(h) { return { value: h.key, label: h.emoji + ' ' + healthLabel(h) }; });
+  }
+  return sortByLabel(out);
+}
+
+function comboLabel(name, options, selected) {
+  if (!selected.length) return '— ' + name + ' —';
+  if (selected.length === 1) {
+    var o = options.find(function(x) { return x.value === selected[0]; });
+    return o ? o.label : selected[0];
+  }
+  return name + ' (' + selected.length + ')';
+}
+
+function buildMultiCombo(kind, name, options, selected) {
+  var h = '<div class="filter-combo" id="fc-' + kind + '">';
+  h += '<button type="button" class="filter-combo-btn' + (selected.length ? ' active' : '') + '" onclick="toggleFilterCombo(\'' + kind + '\')" id="fc-btn-' + kind + '">';
+  h += '<span class="filter-combo-label">' + sanitize(comboLabel(name, options, selected)) + '</span>';
   h += '<span class="filter-combo-chevron">▾</span></button>';
-  h += '<div class="filter-combo-dd" id="fc-dd-' + id + '">';
-  h += '<div class="filter-combo-search"><input type="text" id="fc-search-' + id + '" placeholder="' + (currentLang === 'fr' ? 'Rechercher...' : 'Search...') + '" oninput="filterComboSearch(\'' + id + '\', this.value)" autocomplete="off"></div>';
-  h += '<div class="filter-combo-list" id="fc-list-' + id + '">';
-  h += '<div class="filter-combo-opt' + (!selectedValue ? ' selected' : '') + '" data-value="" data-label="' + sanitize(placeholder) + '" onclick="selectFilterCombo(\'' + id + '\', \'\')">' + sanitize(placeholder) + '</div>';
+  h += '<div class="filter-combo-dd" id="fc-dd-' + kind + '">';
+  h += '<div class="filter-combo-search"><input type="text" id="fc-search-' + kind + '" placeholder="' + (currentLang === 'fr' ? 'Rechercher...' : 'Search...') + '" oninput="filterComboSearch(\'' + kind + '\', this.value)" autocomplete="off"></div>';
+  h += '<div class="filter-combo-list" id="fc-list-' + kind + '">';
+  if (selected.length) {
+    h += '<div class="filter-combo-opt fc-clear" data-label="" onclick="clearFilterKind(\'' + kind + '\')">✕ ' + (currentLang === 'fr' ? 'Effacer' : 'Clear') + '</div>';
+  }
+  if (!options.length) {
+    h += '<div class="fc-empty">' + (currentLang === 'fr' ? 'Aucune valeur' : 'No value') + '</div>';
+  }
   options.forEach(function(o) {
-    // La valeur est lue depuis data-value via getAttribute (dé-échappée par le
-    // navigateur) : une catégorie/tag avec & < > " arrive intacte au callback.
-    h += '<div class="filter-combo-opt' + (o.value === selectedValue ? ' selected' : '') + '" data-value="' + sanitize(o.value) + '" data-label="' + sanitize(o.label) + '" onclick="selectFilterComboEl(\'' + id + '\', this)">' + sanitize(o.label) + '</div>';
+    var on = selected.indexOf(o.value) !== -1;
+    // La valeur est relue depuis data-value (dé-échappée par le navigateur) :
+    // une catégorie ou un tag contenant & < > " arrive intact.
+    h += '<div class="filter-combo-opt' + (on ? ' selected' : '') + '" data-value="' + sanitize(o.value) + '" data-label="' + sanitize(o.label) + '" onclick="toggleFilterValueEl(\'' + kind + '\', this)">';
+    h += '<span class="fc-check">' + (on ? '☑' : '☐') + '</span>' + sanitize(o.label) + '</div>';
   });
   h += '</div></div></div>';
-  window['_fcCallback_' + id] = onSelect;
   return h;
+}
+
+// ---- Champs personnalisés ----
+function customFieldNorm(field, raw) {
+  if (field.Type === 'checkbox') return (raw === 'true' || raw === '1' || raw === true) ? 'true' : 'false';
+  return String(raw == null ? '' : raw).trim();
+}
+function customFieldFilterOptions(field) {
+  if (field.Type === 'checkbox') {
+    return [{ value: 'true', label: currentLang === 'fr' ? 'Oui' : 'Yes' }, { value: 'false', label: currentLang === 'fr' ? 'Non' : 'No' }];
+  }
+  var seen = {}, out = [];
+  function add(v) { v = String(v == null ? '' : v).trim(); if (v && !seen[v]) { seen[v] = true; out.push({ value: v, label: v }); } }
+  if (field.Type === 'select') splitList(field.Options).forEach(add);
+  customFieldValues.forEach(function(cv) { if (cv.Field_Id === field.id) add(cv.Value); });
+  return sortByLabel(out);
+}
+function buildCustomFieldsCombo() {
+  if (!customFields.length) return '';
+  var fr = currentLang === 'fr';
+  var nActive = customFields.filter(function(f) { return customFilterActive(f.id); }).length;
+  var h = '<div class="filter-combo" id="fc-custom">';
+  h += '<button type="button" class="filter-combo-btn' + (nActive ? ' active' : '') + '" onclick="toggleFilterCombo(\'custom\')" id="fc-btn-custom">';
+  h += '<span class="filter-combo-label">' + (nActive ? (fr ? 'Champs' : 'Fields') + ' (' + nActive + ')' : '— ' + (fr ? 'Champs' : 'Fields') + ' —') + '</span>';
+  h += '<span class="filter-combo-chevron">▾</span></button>';
+  h += '<div class="filter-combo-dd fc-wide" id="fc-dd-custom">';
+  h += '<div class="filter-combo-search"><input type="text" id="fc-search-custom" placeholder="' + (fr ? 'Rechercher...' : 'Search...') + '" oninput="filterComboSearch(\'custom\', this.value)" autocomplete="off"></div>';
+  h += '<div class="filter-combo-list" id="fc-list-custom">';
+  if (nActive) h += '<div class="filter-combo-opt fc-clear" data-label="" onclick="clearCustomFilters()">✕ ' + (fr ? 'Effacer' : 'Clear') + '</div>';
+  customFields.forEach(function(f) {
+    h += '<div class="fc-section">' + sanitize(f.Name) + '</div>';
+    if (f.Type === 'date') {
+      var r = (currentFilterCustom[f.id] && !Array.isArray(currentFilterCustom[f.id])) ? currentFilterCustom[f.id] : {};
+      h += '<div class="fc-date-row">';
+      h += '<input type="date" value="' + sanitize(r.from || '') + '" onchange="setCustomDateFilter(' + f.id + ',\'from\',this.value)" title="' + (fr ? 'À partir du' : 'From') + '">';
+      h += '<span>→</span>';
+      h += '<input type="date" value="' + sanitize(r.to || '') + '" onchange="setCustomDateFilter(' + f.id + ',\'to\',this.value)" title="' + (fr ? 'Jusqu\'au' : 'To') + '">';
+      h += '</div>';
+      return;
+    }
+    var opts = customFieldFilterOptions(f);
+    var sel = Array.isArray(currentFilterCustom[f.id]) ? currentFilterCustom[f.id] : [];
+    if (!opts.length) h += '<div class="fc-empty">' + (fr ? 'Aucune valeur saisie' : 'No value yet') + '</div>';
+    opts.forEach(function(o) {
+      var on = sel.indexOf(o.value) !== -1;
+      h += '<div class="filter-combo-opt' + (on ? ' selected' : '') + '" data-field="' + f.id + '" data-value="' + sanitize(o.value) + '" data-label="' + sanitize(f.Name + ' ' + o.label) + '" onclick="toggleCustomFilterEl(this)">';
+      h += '<span class="fc-check">' + (on ? '☑' : '☐') + '</span>' + sanitize(o.label) + '</div>';
+    });
+  });
+  h += '</div></div></div>';
+  return h;
+}
+
+function afterFilterChange() {
+  persistFilters();
+  renderProjectSelector();
+  refreshAllViews();
+}
+
+function toggleFilterValue(kind, value) {
+  if (value == null || value === '') return;
+  var arr = filterValues(kind).slice();
+  var i = arr.indexOf(value);
+  if (i === -1) arr.push(value); else arr.splice(i, 1);
+  setFilterValues(kind, arr);
+  pruneDependentFilters();
+  afterFilterChange();
+}
+function toggleFilterValueEl(kind, el) {
+  toggleFilterValue(kind, el ? el.getAttribute('data-value') : '');
+}
+function clearFilterKind(kind) {
+  setFilterValues(kind, []);
+  afterFilterChange();
+}
+function toggleCustomFilterEl(el) {
+  if (!el) return;
+  var fieldId = parseInt(el.getAttribute('data-field'), 10);
+  var value = el.getAttribute('data-value');
+  var arr = Array.isArray(currentFilterCustom[fieldId]) ? currentFilterCustom[fieldId].slice() : [];
+  var i = arr.indexOf(value);
+  if (i === -1) arr.push(value); else arr.splice(i, 1);
+  if (arr.length) currentFilterCustom[fieldId] = arr; else delete currentFilterCustom[fieldId];
+  afterFilterChange();
+}
+function setCustomDateFilter(fieldId, bound, value) {
+  var r = (currentFilterCustom[fieldId] && !Array.isArray(currentFilterCustom[fieldId])) ? currentFilterCustom[fieldId] : {};
+  r = { from: r.from || '', to: r.to || '' };
+  r[bound] = value || '';
+  if (r.from || r.to) currentFilterCustom[fieldId] = r; else delete currentFilterCustom[fieldId];
+  afterFilterChange();
+}
+function clearCustomFilters() {
+  currentFilterCustom = {};
+  afterFilterChange();
+}
+
+// Un choix en amont peut rendre caduc un choix en aval : une personne qui n'a
+// plus aucun des rôles ou des groupes retenus, un projet sans tâche pour les
+// personnes retenues. On les retire plutôt que de laisser un filtre invisible.
+function pruneDependentFilters() {
+  if (currentFilterAssignees.length && (currentFilterRoles.length || currentFilterGroups.length)) {
+    var allowed = personsIdentSet(usersForPersonFilter().map(function(u) { return u.Email || u.Name; }));
+    currentFilterAssignees = currentFilterAssignees.filter(function(v) {
+      return allowed[String(v).toLowerCase().trim()];
+    });
+  }
+  if (currentFilterAssignees.length && currentProjectId) {
+    var idSet = personsIdentSet(currentFilterAssignees);
+    var match = tasks.some(function(t) {
+      return Number(t.Project_Id) === Number(currentProjectId) && assigneeListHas(t.Assignee, idSet);
+    });
+    if (!match) {
+      currentProjectId = null;
+      try { localStorage.setItem(projectStorageKey(), ''); } catch (e) {}
+    }
+  }
 }
 
 // B2 : multi-filtres statut/priorité du tableau (tableau vide = tous)
@@ -2860,31 +3225,53 @@ function clearMsFilter(kind) {
   renderTableView();
 }
 
+var _openFilterCombo = null;   // liste de filtre actuellement ouverte
+
+function closeFilterCombos() {
+  document.querySelectorAll('.filter-combo-dd.show').forEach(function(d) { d.classList.remove('show'); });
+  document.querySelectorAll('.filter-combo-btn.open').forEach(function(b) { b.classList.remove('open'); });
+}
+
 function toggleFilterCombo(id) {
   var dd = document.getElementById('fc-dd-' + id);
   var btn = document.getElementById('fc-btn-' + id);
   if (!dd) return;
   var isOpen = dd.classList.contains('show');
-  document.querySelectorAll('.filter-combo-dd.show').forEach(function(d) { d.classList.remove('show'); });
-  document.querySelectorAll('.filter-combo-btn.open').forEach(function(b) { b.classList.remove('open'); });
+  closeFilterCombos();
+  _openFilterCombo = null;
   if (!isOpen) {
     dd.classList.add('show');
     if (btn) btn.classList.add('open');
+    _openFilterCombo = id;
     var inp = document.getElementById('fc-search-' + id);
     if (inp) { inp.value = ''; inp.focus(); filterComboSearch(id, ''); }
     setTimeout(function() {
       document.addEventListener('mousedown', function hideFC(e) {
+        // Le bandeau est reconstruit à chaque case cochée : on recherche la boîte
+        // à chaque clic au lieu de garder une référence sur un élément disparu.
         var box = document.getElementById('fc-' + id);
+        if (_openFilterCombo !== id) { document.removeEventListener('mousedown', hideFC); return; }
         if (box && !box.contains(e.target)) {
-          var dd2 = document.getElementById('fc-dd-' + id);
-          var btn2 = document.getElementById('fc-btn-' + id);
-          if (dd2) dd2.classList.remove('show');
-          if (btn2) btn2.classList.remove('open');
+          closeFilterCombos();
+          _openFilterCombo = null;
           document.removeEventListener('mousedown', hideFC);
         }
       });
     }, 0);
   }
+}
+
+// Rouvre, après reconstruction du bandeau, la liste qui était ouverte.
+function reopenFilterCombo(state) {
+  var dd = document.getElementById('fc-dd-' + state.id);
+  var btn = document.getElementById('fc-btn-' + state.id);
+  if (!dd) { _openFilterCombo = null; return; }
+  dd.classList.add('show');
+  if (btn) btn.classList.add('open');
+  var inp = document.getElementById('fc-search-' + state.id);
+  if (inp && state.q) { inp.value = state.q; filterComboSearch(state.id, state.q); }
+  var list = document.getElementById('fc-list-' + state.id);
+  if (list && state.top) list.scrollTop = state.top;
 }
 
 function filterComboSearch(id, query) {
@@ -2895,20 +3282,16 @@ function filterComboSearch(id, query) {
     var label = (opt.dataset.label || '').toLowerCase();
     opt.style.display = (!q || label.indexOf(q) !== -1) ? '' : 'none';
   });
-}
-
-function selectFilterCombo(id, value) {
-  var dd = document.getElementById('fc-dd-' + id);
-  var btn = document.getElementById('fc-btn-' + id);
-  if (dd) dd.classList.remove('show');
-  if (btn) btn.classList.remove('open');
-  var cb = window['_fcCallback_' + id];
-  if (cb) cb(value);
-}
-
-// Variante DOM : lit la valeur brute depuis data-value (dé-échappée par getAttribute)
-function selectFilterComboEl(id, el) {
-  selectFilterCombo(id, el ? (el.getAttribute('data-value') || '') : '');
+  // Un intitulé de champ sans aucune valeur visible dessous n'a plus lieu d'être.
+  list.querySelectorAll('.fc-section').forEach(function(sec) {
+    var visible = !q, el = sec.nextElementSibling;
+    while (el && !el.classList.contains('fc-section')) {
+      if (el.classList.contains('filter-combo-opt') && el.style.display !== 'none') visible = true;
+      if (el.classList.contains('fc-date-row') && !q) visible = true;
+      el = el.nextElementSibling;
+    }
+    sec.style.display = visible ? '' : 'none';
+  });
 }
 
 function toggleProjectDropdown() {
@@ -3043,48 +3426,79 @@ function filtersStorageKey() { return 'pm-filters' + pmDocKey; }
 function projectStorageKey() { return 'pm-current-project' + pmDocKey; }
 
 // Persistance des filtres (conservés en changeant de page / au rechargement)
+function filtersSnapshot() {
+  return {
+    roles: currentFilterRoles.slice(), assignees: currentFilterAssignees.slice(),
+    groups: currentFilterGroups.slice(), categories: currentFilterCategories.slice(),
+    tags: currentFilterTags.slice(), healths: currentFilterHealths.slice(),
+    custom: JSON.parse(JSON.stringify(currentFilterCustom))
+  };
+}
+function listOrLegacy(list, legacy) {
+  if (Array.isArray(list)) return list.filter(function(v) { return v != null && v !== ''; }).map(String);
+  return legacy ? [String(legacy)] : [];
+}
+// Accepte aussi l'ancien format à valeur unique (role, assignee, category, tag).
+function applyFiltersSnapshot(s) {
+  s = s || {};
+  currentFilterRoles = listOrLegacy(s.roles, s.role);
+  currentFilterAssignees = listOrLegacy(s.assignees, s.assignee);
+  currentFilterGroups = listOrLegacy(s.groups);
+  currentFilterCategories = listOrLegacy(s.categories, s.category);
+  currentFilterTags = listOrLegacy(s.tags, s.tag);
+  currentFilterHealths = listOrLegacy(s.healths);
+  currentFilterCustom = {};
+  var c = s.custom || {};
+  Object.keys(c).forEach(function(k) {
+    if (Array.isArray(c[k])) { if (c[k].length) currentFilterCustom[k] = c[k].map(String); }
+    else if (c[k] && (c[k].from || c[k].to)) currentFilterCustom[k] = { from: c[k].from || '', to: c[k].to || '' };
+  });
+}
+
 function persistFilters() {
   try {
-    localStorage.setItem(filtersStorageKey(), JSON.stringify({
-      role: currentFilterRole, assignee: currentFilterAssignee,
-      category: currentFilterCategory, tag: currentFilterTag, mineOnly: mineOnly
-    }));
+    var s = filtersSnapshot();
+    s.mineOnly = mineOnly;
+    localStorage.setItem(filtersStorageKey(), JSON.stringify(s));
   } catch (e) {}
 }
 
 // B1 : une valeur restauree qui n'existe plus dans CE document n'apparait dans
-// aucune liste — le combo affichait alors « — Personne — » alors que le filtre
-// etait bien actif, et des taches disparaissaient sans filtre visible.
+// aucune liste — le combo affichait alors son intitule par defaut alors que le
+// filtre etait bien actif, et des taches disparaissaient sans filtre visible.
 // On ecarte donc toute valeur introuvable dans les donnees chargees.
 function sanitizeRestoredFilters() {
-  if (currentFilterRole) {
-    var known = false;
-    users.forEach(function(u) { getUserRoles(u).forEach(function(r) { if (r === currentFilterRole) known = true; }); });
-    if (!known) currentFilterRole = null;
+  function keep(kind, list) {
+    var known = {};
+    filterOptions(kind).forEach(function(o) { known[o.value] = true; });
+    return list.filter(function(v) { return known[v]; });
   }
-  if (currentFilterAssignee && !findUserByIdent(currentFilterAssignee)) currentFilterAssignee = null;
-  if (currentFilterCategory) {
-    var catKey = String(currentFilterCategory).trim();
-    var catFound = tasks.some(function(t) { return String(t.Category || '').trim() === catKey; });
-    if (!catFound) currentFilterCategory = null;
-  }
-  if (currentFilterTag) {
-    var tagKey = String(currentFilterTag).trim();
-    var tagFound = tags.some(function(tg) { return String(tg.Name || '').trim() === tagKey; });
-    if (!tagFound) currentFilterTag = null;
-  }
+  currentFilterRoles = keep('role', currentFilterRoles);
+  currentFilterGroups = keep('group', currentFilterGroups);
+  currentFilterAssignees = currentFilterAssignees.filter(function(v) { return !!findUserByIdent(v); });
+  currentFilterCategories = keep('category', currentFilterCategories);
+  currentFilterTags = keep('tag', currentFilterTags);
+  currentFilterHealths = hasHealthColumn ? keep('health', currentFilterHealths) : [];
+  Object.keys(currentFilterCustom).forEach(function(k) {
+    var field = customFields.find(function(f) { return String(f.id) === String(k); });
+    if (!field) { delete currentFilterCustom[k]; return; }
+    if (Array.isArray(currentFilterCustom[k])) {
+      var known = {};
+      customFieldFilterOptions(field).forEach(function(o) { known[o.value] = true; });
+      var left = currentFilterCustom[k].filter(function(v) { return known[v]; });
+      if (left.length) currentFilterCustom[k] = left; else delete currentFilterCustom[k];
+    }
+  });
   if (currentProjectId && !projects.some(function(pr) { return pr.id === currentProjectId; })) {
     currentProjectId = null;
   }
+  pruneDependentFilters();
 }
 
 function restoreFilters() {
   try {
     var s = JSON.parse(localStorage.getItem(filtersStorageKey()) || '{}');
-    currentFilterRole = s.role || null;
-    currentFilterAssignee = s.assignee || null;
-    currentFilterCategory = s.category || null;
-    currentFilterTag = s.tag || null;
+    applyFiltersSnapshot(s);
     mineOnly = !!s.mineOnly;
   } catch (e) {}
   try { var sp = localStorage.getItem(projectStorageKey()); currentProjectId = sp ? (parseInt(sp) || null) : null; } catch (e) {}
@@ -3093,57 +3507,8 @@ function restoreFilters() {
   try { localStorage.setItem(projectStorageKey(), currentProjectId || ''); } catch (e) {}
 }
 
-function filterByRole(role) {
-  currentFilterRole = role || null;
-  // Si la personne sélectionnée n'a plus le rôle, la déselectionner
-  if (currentFilterRole && currentFilterAssignee) {
-    var selUser = findUserByIdent(currentFilterAssignee);
-    var stillValid = !!(selUser && userMatchesRole(selUser, currentFilterRole));
-    if (!stillValid) {
-      currentFilterAssignee = null;
-      currentProjectId = null;
-    }
-  }
-  persistFilters();
-  renderProjectSelector();
-  refreshAllViews();
-}
-
-function filterByAssignee(name) {
-  currentFilterAssignee = name || null;
-  // Si le projet sélectionné n'a plus de tâches pour cette personne, le déselectionner
-  if (currentFilterAssignee && currentProjectId) {
-    var idSet = personIdentSet(currentFilterAssignee);
-    var match = tasks.some(function(t) {
-      if (Number(t.Project_Id) !== Number(currentProjectId)) return false;
-      return assigneeListHas(t.Assignee, idSet);
-    });
-    if (!match) currentProjectId = null;
-  }
-  persistFilters();
-  renderProjectSelector();
-  refreshAllViews();
-}
-
-function filterByCategory(val) {
-  currentFilterCategory = val || null;
-  persistFilters();
-  renderProjectSelector();
-  refreshAllViews();
-}
-
-function filterByTag(val) {
-  currentFilterTag = val || null;
-  persistFilters();
-  renderProjectSelector();
-  refreshAllViews();
-}
-
 function resetFilters() {
-  currentFilterRole = null;
-  currentFilterAssignee = null;
-  currentFilterCategory = null;
-  currentFilterTag = null;
+  applyFiltersSnapshot({});
   mineOnly = false;
   currentProjectId = null;
   localStorage.setItem(projectStorageKey(), '');
@@ -3154,32 +3519,64 @@ function resetFilters() {
 
 var showArchivedTasks = false;
 
+// Une tâche relève d'un groupe si elle lui est confiée, ou si l'un de ses
+// assignés en fait partie : filtrer sur « Travaux » doit montrer le travail de
+// l'équipe, pas seulement les tâches où quelqu'un a pensé à remplir le champ.
+function taskInGroups(t, groupList) {
+  if (groupList.indexOf(String(t.Group_Name || '').trim()) !== -1) return true;
+  var members = users.filter(function(u) { return groupList.some(function(g) { return userInGroup(u, g); }); });
+  if (!members.length) return false;
+  return assigneeListHas(t.Assignee, personsIdentSet(members.map(function(u) { return u.Email || u.Name; })));
+}
+
+function taskMatchesCustomFilters(t) {
+  return Object.keys(currentFilterCustom).every(function(k) {
+    var field = customFields.find(function(f) { return String(f.id) === String(k); });
+    if (!field || !customFilterActive(k)) return true;
+    var raw = getTaskCustomFieldValue(t.id, field.id);
+    var f = currentFilterCustom[k];
+    if (Array.isArray(f)) return f.indexOf(customFieldNorm(field, raw)) !== -1;
+    // Champ date : valeur en secondes, bornes saisies en AAAA-MM-JJ, incluses.
+    var ts = parseInt(raw, 10);
+    if (!ts) return false;
+    if (f.from && ts < toEpoch(f.from)) return false;
+    if (f.to && ts > toEpoch(f.to) + 86399) return false;
+    return true;
+  });
+}
+
 function getFilteredTasks() {
   var result = tasks.filter(function(t) {
     if (showArchivedTasks) return t.Status === 'archived';
     return t.Status !== 'archived';
   });
-  if (currentFilterRole) {
+  if (currentFilterRoles.length) {
     // task.Assignee peut contenir le Nom OU l'Email : on accepte les deux
-    var roleIdSet = {};
-    users.filter(function(u) { return userMatchesRole(u, currentFilterRole); })
-      .forEach(function(u) {
-        if (u.Email) roleIdSet[String(u.Email).toLowerCase().trim()] = true;
-        if (u.Name) roleIdSet[String(u.Name).toLowerCase().trim()] = true;
-      });
+    var roleUsers = users.filter(function(u) { return currentFilterRoles.some(function(r) { return userMatchesRole(u, r); }); });
+    var roleIdSet = personsIdentSet(roleUsers.map(function(u) { return u.Email || u.Name; }));
     result = result.filter(function(t) { return assigneeListHas(t.Assignee, roleIdSet); });
   }
-  if (currentFilterAssignee) {
-    var identSet = personIdentSet(currentFilterAssignee);
+  if (currentFilterAssignees.length) {
+    var identSet = personsIdentSet(currentFilterAssignees);
     result = result.filter(function(t) { return assigneeListHas(t.Assignee, identSet); });
   }
-  if (currentFilterCategory) {
-    var catKey = String(currentFilterCategory).trim();
-    result = result.filter(function(t) { return String(t.Category || '').trim() === catKey; });
+  if (currentFilterGroups.length) {
+    result = result.filter(function(t) { return taskInGroups(t, currentFilterGroups); });
   }
-  if (currentFilterTag) {
-    var tagKey = String(currentFilterTag).trim();
-    result = result.filter(function(t) { return String(t.Tag || '').trim() === tagKey; });
+  if (currentFilterCategories.length) {
+    result = result.filter(function(t) { return currentFilterCategories.indexOf(String(t.Category || '').trim()) !== -1; });
+  }
+  if (currentFilterTags.length) {
+    // Une tâche porte plusieurs tags : elle passe dès qu'elle en a un des retenus.
+    result = result.filter(function(t) {
+      return taskTags(t).some(function(tg) { return currentFilterTags.indexOf(tg) !== -1; });
+    });
+  }
+  if (currentFilterHealths.length) {
+    result = result.filter(function(t) { return currentFilterHealths.indexOf(t.Health || '') !== -1; });
+  }
+  if (anyCustomFilterActive()) {
+    result = result.filter(taskMatchesCustomFilters);
   }
   if (mineOnly && !currentProjectId) {
     var myIds = myProjectIdSet();
@@ -3190,6 +3587,256 @@ function getFilteredTasks() {
     result = result.filter(function(t) { return Number(t.Project_Id) === cpid; });
   }
   return result;
+}
+
+// Les filtres d'une vue, en clair : sert au bandeau comme au résumé de la vue
+// par défaut, pour que les deux disent la même chose avec les mêmes mots.
+function describeFilters(view) {
+  var f = view.filters || {}, bits = [], fr = currentLang === 'fr';
+  function join(list, fn) { return list.map(function(v) { return sanitize(fn ? fn(v) : v); }).join(', '); }
+  if (view.mineOnly) bits.push('👤 ' + (fr ? 'Mes projets' : 'My projects'));
+  if ((f.roles || []).length) bits.push('👔 ' + join(f.roles, roleLabel));
+  if ((f.assignees || []).length) bits.push('👤 ' + join(f.assignees, function(v) { var u = findUserByIdent(v); return u ? (u.Name || u.Email) : v; }));
+  if ((f.groups || []).length) bits.push('👥 ' + join(f.groups));
+  if ((f.categories || []).length) bits.push('📁 ' + join(f.categories));
+  if ((f.tags || []).length) bits.push('🏷️ ' + join(f.tags));
+  if ((f.healths || []).length) bits.push(join(f.healths, function(k) { var h = healthDef(k); return h ? h.emoji + ' ' + healthLabel(h) : k; }));
+  Object.keys(f.custom || {}).forEach(function(k) {
+    var field = customFields.find(function(x) { return String(x.id) === String(k); });
+    if (!field) return;
+    var c = f.custom[k];
+    if (Array.isArray(c)) {
+      if (!c.length) return;
+      bits.push('🧩 ' + sanitize(field.Name) + ' : ' + join(c, function(v) {
+        if (field.Type !== 'checkbox') return v;
+        return v === 'true' ? (fr ? 'Oui' : 'Yes') : (fr ? 'Non' : 'No');
+      }));
+    } else if (c && (c.from || c.to)) {
+      bits.push('🧩 ' + sanitize(field.Name) + ' : ' + sanitize((c.from || '…') + ' → ' + (c.to || '…')));
+    }
+  });
+  if (view.projectId) {
+    var p = projects.find(function(x) { return x.id === view.projectId; });
+    if (p) bits.push('🎯 ' + sanitize(p.Name));
+  }
+  return bits;
+}
+
+// ---------------------------------------------------------------------------
+// Préférences d'affichage et vue par défaut — propres à chaque utilisateur
+// ---------------------------------------------------------------------------
+
+function myEmailKey() { return String(currentUserEmail || '').toLowerCase().trim(); }
+function viewPrefsStorageKey() { return 'pm-viewprefs' + pmDocKey + ':' + myEmailKey(); }
+function defaultViewStorageKey() { return 'pm-default-view' + pmDocKey + ':' + myEmailKey(); }
+
+// Tri et regroupement du Kanban : retenus d'une session à l'autre, par personne.
+function persistViewPrefs() {
+  try {
+    localStorage.setItem(viewPrefsStorageKey(), JSON.stringify({ kanbanSort: kanbanSort, kanbanGroupBy: kanbanGroupBy }));
+  } catch (e) {}
+}
+function restoreViewPrefs() {
+  try {
+    var s = JSON.parse(localStorage.getItem(viewPrefsStorageKey()) || 'null');
+    if (!s) return;   // rien de personnel : on garde l'ancien réglage partagé
+    if (s.kanbanSort) kanbanSort = s.kanbanSort;
+    if (s.kanbanGroupBy) kanbanGroupBy = s.kanbanGroupBy;
+  } catch (e) {}
+}
+
+function activeTabId() {
+  var b = document.querySelector('.tab-btn.active');
+  return b ? b.getAttribute('data-tab') : null;
+}
+
+// Tout ce qui fait « la vue » à un instant donné.
+function currentViewSnapshot() {
+  return {
+    v: 1,
+    tab: activeTabId(),
+    filters: filtersSnapshot(),
+    projectId: currentProjectId || null,
+    mineOnly: !!mineOnly,
+    kanbanSort: kanbanSort,
+    kanbanGroupBy: kanbanGroupBy,
+    collapsedCols: Object.keys(collapsedKanbanCols).filter(function(k) { return collapsedKanbanCols[k]; }),
+    calendarMode: calendarMode,
+    ganttMode: ganttMode,
+    ganttSort: ganttSort,
+    tableSort: { field: tableSortField, asc: tableSortAsc },
+    tableStatuses: tableFilterStatuses.slice(),
+    tablePriorities: tableFilterPriorities.slice()
+  };
+}
+
+function applyViewSnapshot(s) {
+  if (!s) return;
+  applyFiltersSnapshot(s.filters || {});
+  mineOnly = !!s.mineOnly;
+  currentProjectId = s.projectId || null;
+  if (s.kanbanSort) kanbanSort = s.kanbanSort;
+  if (s.kanbanGroupBy) kanbanGroupBy = s.kanbanGroupBy;
+  collapsedKanbanCols = {};
+  (s.collapsedCols || []).forEach(function(k) { collapsedKanbanCols[k] = true; });
+  if (s.calendarMode) { calendarMode = s.calendarMode; calendarWeekOffset = 0; calendarDayOffset = 0; }
+  if (s.ganttMode && s.ganttMode !== 'custom') ganttMode = s.ganttMode;
+  if (s.ganttSort) ganttSort = s.ganttSort;
+  if (s.tableSort) { tableSortField = s.tableSort.field || null; tableSortAsc = s.tableSort.asc !== false; }
+  // Un statut de Kanban supprimé depuis ne doit pas laisser un tableau vide.
+  var knownStatuses = getKanbanStatuses().map(function(st) { return st.key; });
+  tableFilterStatuses = (s.tableStatuses || []).filter(function(k) { return knownStatuses.indexOf(k) !== -1; });
+  tableFilterPriorities = (s.tablePriorities || []).filter(function(k) { return ['high', 'medium', 'low'].indexOf(k) !== -1; });
+
+  sanitizeRestoredFilters();
+  persistFilters();
+  persistViewPrefs();
+  try { localStorage.setItem(projectStorageKey(), currentProjectId || ''); } catch (e) {}
+
+  var gs = document.getElementById('gantt-sort'); if (gs) gs.value = ganttSort;
+  document.querySelectorAll('[data-gantt-mode]').forEach(function(b) {
+    b.classList.toggle('active', b.getAttribute('data-gantt-mode') === ganttMode);
+  });
+  var rangeBox = document.getElementById('gantt-custom-range');
+  if (rangeBox) rangeBox.style.display = (ganttMode === 'custom') ? 'flex' : 'none';
+
+  renderProjectSelector();
+  if (s.tab && isTabAllowed(s.tab) && document.getElementById('tab-' + s.tab)) switchTab(s.tab);
+  else refreshAllViews();
+  updateStats();
+}
+
+// La vue par défaut enregistrée pour moi : celle du document d'abord, sinon
+// celle gardée par ce navigateur (lecteur sans droit d'écriture).
+function getMyDefaultView() {
+  var em = myEmailKey();
+  var row = em ? userViews.find(function(v) { return String(v.User_Email || '').toLowerCase().trim() === em; }) : null;
+  if (row && row.View_Json) { try { return JSON.parse(row.View_Json); } catch (e) {} }
+  try { return JSON.parse(localStorage.getItem(defaultViewStorageKey()) || 'null'); } catch (e2) { return null; }
+}
+
+// Rend 'document' si la vue a pu être écrite dans le document, 'navigateur' sinon.
+async function saveMyDefaultView(view) {
+  var json = JSON.stringify(view);
+  try { localStorage.setItem(defaultViewStorageKey(), json); } catch (e) {}
+  var em = myEmailKey();
+  if (!em) return 'navigateur';
+  try {
+    var row = userViews.find(function(v) { return String(v.User_Email || '').toLowerCase().trim() === em; });
+    var rec = { View_Json: json, Updated_At: Math.floor(Date.now() / 1000) };
+    if (row) {
+      await grist.docApi.applyUserActions([['UpdateRecord', USER_VIEWS_TABLE, row.id, rec]]);
+      row.View_Json = json;
+    } else {
+      rec.User_Email = currentUserEmail;
+      var res = await grist.docApi.applyUserActions([['AddRecord', USER_VIEWS_TABLE, null, rec]]);
+      userViews.push({ id: (res && res.retValues && res.retValues[0]) || null, User_Email: currentUserEmail, View_Json: json });
+    }
+    return 'document';
+  } catch (e) {
+    console.log('[GristPM] vue par défaut gardée dans le navigateur :', e.message);
+    return 'navigateur';
+  }
+}
+
+async function deleteMyDefaultView() {
+  try { localStorage.removeItem(defaultViewStorageKey()); } catch (e) {}
+  var em = myEmailKey();
+  var row = em ? userViews.find(function(v) { return String(v.User_Email || '').toLowerCase().trim() === em; }) : null;
+  if (row && row.id) {
+    try {
+      await grist.docApi.applyUserActions([['RemoveRecord', USER_VIEWS_TABLE, row.id]]);
+    } catch (e) {
+      // Suppression refusée (droits) : on vide la ligne, ce qui revient au même.
+      try { await grist.docApi.applyUserActions([['UpdateRecord', USER_VIEWS_TABLE, row.id, { View_Json: '' }]]); } catch (e2) {}
+    }
+    userViews = userViews.filter(function(v) { return v !== row; });
+  }
+}
+
+// Bouton « Ma vue » : rappelle la vue par défaut ; s'il n'y en a pas, propose d'en créer une.
+function applyMyDefaultView() {
+  var v = getMyDefaultView();
+  if (!v) { openDefaultViewModal(); return; }
+  applyViewSnapshot(v);
+  showToast(currentLang === 'fr' ? 'Vue par défaut appliquée' : 'Default view applied', 'success');
+}
+
+function describeView(view) {
+  var fr = currentLang === 'fr', out = [];
+  var tabNames = { calendar: fr ? 'Calendrier' : 'Calendar', kanban: 'Kanban', table: fr ? 'Tableau' : 'Table', gantt: 'Gantt',
+                   templates: 'Templates', stats: 'Stats', team: fr ? 'Équipe' : 'Team', settings: fr ? 'Paramètres' : 'Settings' };
+  // Les valeurs viennent d'une table du document, que d'autres peuvent modifier :
+  // tout ce qui n'est pas un libellé connu est échappé avant affichage.
+  if (view.tab) out.push([fr ? 'Onglet à l\'ouverture' : 'Opening tab', tabNames[view.tab] || sanitize(view.tab)]);
+  var bits = describeFilters(view);
+  out.push([fr ? 'Filtres' : 'Filters', bits.length ? bits.join(' › ') : (fr ? 'aucun' : 'none')]);
+  var sorts = { manual: fr ? 'manuel' : 'manual', alpha: 'A → Z', 'alpha-desc': 'Z → A', due: fr ? 'échéance' : 'due date', priority: fr ? 'priorité' : 'priority' };
+  var groupsBy = { status: fr ? 'statut' : 'status', priority: fr ? 'priorité' : 'priority', project: fr ? 'projet' : 'project' };
+  out.push(['Kanban', (fr ? 'groupé par ' : 'grouped by ') + (groupsBy[view.kanbanGroupBy] || sanitize(view.kanbanGroupBy))
+    + (fr ? ', tri ' : ', sort ') + (sorts[view.kanbanSort] || sanitize(view.kanbanSort))
+    + ((view.collapsedCols || []).length ? (fr ? ', ' + view.collapsedCols.length + ' colonne(s) repliée(s)' : ', ' + view.collapsedCols.length + ' collapsed column(s)') : '')]);
+  var cal = { month: fr ? 'mois' : 'month', week: fr ? 'semaine' : 'week', day: fr ? 'jour' : 'day' };
+  out.push([fr ? 'Calendrier' : 'Calendar', cal[view.calendarMode] || sanitize(view.calendarMode)]);
+  var gm = { days: fr ? 'jours' : 'days', weeks: fr ? 'semaines' : 'weeks', months: fr ? 'mois' : 'months', year: fr ? 'année' : 'year', twoyears: fr ? '2 ans' : '2 years' };
+  out.push(['Gantt', (gm[view.ganttMode] || sanitize(view.ganttMode)) + (view.ganttSort && view.ganttSort !== 'default' ? (fr ? ', tri ' : ', sort ') + (sorts[view.ganttSort] || sanitize(view.ganttSort)) : '')]);
+  var tb = [];
+  if (view.tableSort && view.tableSort.field) tb.push((fr ? 'tri ' : 'sort ') + sanitize(view.tableSort.field) + (view.tableSort.asc === false ? ' ▼' : ' ▲'));
+  if ((view.tableStatuses || []).length) tb.push(view.tableStatuses.map(function(k) { return sanitize(statusLabel(k)); }).join(', '));
+  if ((view.tablePriorities || []).length) tb.push(view.tablePriorities.map(function(k) { return sanitize(priorityLabel(k)); }).join(', '));
+  if (tb.length) out.push([fr ? 'Tableau' : 'Table', tb.join(' · ')]);
+  return out;
+}
+
+function viewSummaryHtml(view) {
+  var h = '<div class="view-summary">';
+  describeView(view).forEach(function(l) {
+    h += '<div class="view-summary-row"><span>' + sanitize(l[0]) + '</span><b>' + l[1] + '</b></div>';
+  });
+  return h + '</div>';
+}
+
+function openDefaultViewModal() {
+  var fr = currentLang === 'fr';
+  var saved = getMyDefaultView();
+  var html = '<div class="modal-overlay" onclick="closeModal(event)">';
+  html += '<div class="modal" onclick="event.stopPropagation()" style="max-width:560px;">';
+  html += '<div class="modal-header"><h3>⭐ ' + (fr ? 'Ma vue par défaut' : 'My default view') + '</h3><button class="modal-close" onclick="closeModalForce()">✕</button></div>';
+  html += '<div class="modal-body">';
+  html += '<p class="view-help">' + (fr
+    ? 'C\'est la vue qui s\'affiche à chaque ouverture de l\'outil : onglet, filtres, tris. Elle n\'appartient qu\'à vous — elle ne change rien pour le reste de l\'équipe. Vous pouvez tout modifier en cours de route, puis y revenir d\'un clic sur « Ma vue ».'
+    : 'This is the view shown each time you open the tool: tab, filters, sorting. It is yours only — it changes nothing for the rest of the team. Change anything as you go, then come back to it with one click on "My view".') + '</p>';
+  html += '<h4 class="view-h">' + (fr ? 'Vue affichée en ce moment' : 'View on screen right now') + '</h4>';
+  html += viewSummaryHtml(currentViewSnapshot());
+  html += '<h4 class="view-h">' + (fr ? 'Vue par défaut enregistrée' : 'Saved default view') + '</h4>';
+  html += saved ? viewSummaryHtml(saved)
+               : '<div class="view-none">' + (fr ? 'Aucune pour l\'instant : l\'outil rouvre sur les derniers filtres utilisés.' : 'None yet: the tool reopens on the last filters used.') + '</div>';
+  html += '</div>';
+  html += '<div class="modal-footer" style="flex-wrap:wrap;gap:8px;">';
+  if (saved) html += '<button class="btn-danger" onclick="removeDefaultViewFromModal()">' + (fr ? 'Supprimer' : 'Delete') + '</button>';
+  html += '<div style="flex:1;"></div>';
+  html += '<button class="btn btn-secondary" onclick="closeModalForce()">' + (fr ? 'Fermer' : 'Close') + '</button>';
+  if (saved) html += '<button class="btn btn-secondary" onclick="closeModalForce();applyMyDefaultView()">' + (fr ? 'Appliquer la vue enregistrée' : 'Apply saved view') + '</button>';
+  html += '<button class="btn btn-primary" onclick="saveDefaultViewFromModal()">' + (fr ? 'Enregistrer la vue affichée' : 'Save the view on screen') + '</button>';
+  html += '</div></div></div>';
+  document.getElementById('modal-container').innerHTML = html;
+}
+
+async function saveDefaultViewFromModal() {
+  // La modale est ouverte au-dessus de la vue : l'instantané reste celui de l'écran.
+  var where = await saveMyDefaultView(currentViewSnapshot());
+  closeModalForce();
+  renderProjectSelector();
+  showToast(currentLang === 'fr'
+    ? (where === 'document' ? 'Vue par défaut enregistrée' : 'Vue par défaut enregistrée sur ce navigateur uniquement')
+    : (where === 'document' ? 'Default view saved' : 'Default view saved on this browser only'), 'success');
+}
+
+async function removeDefaultViewFromModal() {
+  await deleteMyDefaultView();
+  closeModalForce();
+  renderProjectSelector();
+  showToast(currentLang === 'fr' ? 'Vue par défaut supprimée' : 'Default view deleted', 'info');
 }
 
 function getProjectName(projectId) {
@@ -3306,7 +3953,7 @@ function renderCalendarView() {
   for (var i = startDayOfWeek - 1; i >= 0; i--) {
     var dayNum = prevMonthDays - i;
     var prevDate = new Date(calendarYear, calendarMonth - 1, dayNum);
-    var prevTasks = getTasksForDate(prevDate);
+    var prevTasks = getCalendarEntriesForDate(prevDate);
     daysHtml += renderCalendarDay(dayNum, prevDate, prevTasks, true, false, false);
     dayIndex++;
   }
@@ -3315,7 +3962,7 @@ function renderCalendarView() {
   for (var d = 1; d <= daysInMonth; d++) {
     var currentDate = new Date(calendarYear, calendarMonth, d);
     var isToday = currentDate.getTime() === today.getTime();
-    var dayTasks = getTasksForDate(currentDate);
+    var dayTasks = getCalendarEntriesForDate(currentDate);
     daysHtml += renderCalendarDay(d, currentDate, dayTasks, false, isToday, false);
     dayIndex++;
   }
@@ -3324,7 +3971,7 @@ function renderCalendarView() {
   var remainingDays = 42 - dayIndex; // 6 rows * 7 days
   for (var i = 1; i <= remainingDays; i++) {
     var nextDate = new Date(calendarYear, calendarMonth + 1, i);
-    var nextTasks = getTasksForDate(nextDate);
+    var nextTasks = getCalendarEntriesForDate(nextDate);
     daysHtml += renderCalendarDay(i, nextDate, nextTasks, true, false);
   }
 
@@ -3356,12 +4003,7 @@ function renderCalendarDay(dayNum, date, dayTasks, isOtherMonth, isToday, isWeek
 
   var maxTasks = isWeekView ? 20 : 3;
   for (var i = 0; i < Math.min(dayTasks.length, maxTasks); i++) {
-    var task = dayTasks[i];
-    var statusClass = 'status-' + task.Status;
-    var priorityClass = task.Priority === 'high' ? ' priority-high' : '';
-    html += '<div class="day-task ' + statusClass + priorityClass + '" draggable="true" ondragstart="onCalendarTaskDragStart(event, ' + task.id + ')" onclick="event.stopPropagation(); openEditTaskModal(' + task.id + ')" title="' + sanitize(task.Title) + '">';
-    html += sanitize(task.Title);
-    html += '</div>';
+    html += renderCalendarEntry(dayTasks[i], true);
   }
 
   if (dayTasks.length > maxTasks) {
@@ -3469,6 +4111,71 @@ function getWeekStart(offset) {
   return monday;
 }
 
+// ---- Sous-tâches dans le calendrier ----------------------------------------
+// Une tâche apparaît un jour donné si elle y tombe elle-même, OU si l'une de ses
+// sous-tâches y tombe. Les sous-tâches du jour se déplient sous leur tâche.
+var expandedCalendarTasks = {}; // taskId -> true quand ses sous-tâches sont dépliées
+
+function toggleCalendarTask(taskId) {
+  if (expandedCalendarTasks[taskId]) delete expandedCalendarTasks[taskId];
+  else expandedCalendarTasks[taskId] = true;
+  renderCalendarView();
+}
+
+function subtaskOnDay(st, dayStartTs, dayEndTs) {
+  var s = st.Start_Date || null, e = st.Due_Date || null;
+  // Un jalon n'a qu'une date ; une sous-tâche avec début et fin couvre la période.
+  if (st.Type !== 'milestone' && s && e) return s <= dayEndTs && e >= dayStartTs;
+  var d = e || s;
+  return !!d && d >= dayStartTs && d <= dayEndTs;
+}
+
+// Liste des entrées d'un jour : { task, own, subs }.
+//   own  — la tâche tombe elle-même ce jour-là ;
+//   subs — ses sous-tâches qui tombent ce jour-là (hors archivées).
+function getCalendarEntriesForDate(date) {
+  var dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  var dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  var a = dayStart.getTime() / 1000, b = dayEnd.getTime() / 1000;
+  var own = {};
+  getTasksForDate(date).forEach(function(t) { own[t.id] = true; });
+  var entries = [];
+  // Les sous-tâches suivent les filtres de leur tâche : une tâche filtrée
+  // n'apparaît pas par ses sous-tâches.
+  getFilteredTasks().forEach(function(task) {
+    var subs = getTaskSubtasks(task.id).filter(function(st) { return subtaskOnDay(st, a, b); });
+    if (own[task.id] || subs.length) entries.push({ task: task, own: !!own[task.id], subs: subs });
+  });
+  return entries;
+}
+
+function renderCalendarEntry(entry, draggable) {
+  var task = entry.task, subs = entry.subs;
+  var fr = currentLang === 'fr';
+  var open = !!expandedCalendarTasks[task.id];
+  var cls = 'day-task status-' + task.Status + (task.Priority === 'high' ? ' priority-high' : '') + (entry.own ? '' : ' via-subtask');
+  var tip = sanitize(task.Title) + (entry.own ? '' : (fr ? ' — affichée pour ses sous-tâches du jour' : ' — shown for its subtasks of the day'));
+  var h = '<div class="' + cls + '"';
+  // Glisser une tâche qui n'est là que par ses sous-tâches déplacerait ses propres
+  // dates vers un jour où elle n'est pas : on ne le propose pas.
+  if (draggable && entry.own) h += ' draggable="true" ondragstart="onCalendarTaskDragStart(event, ' + task.id + ')"';
+  h += ' onclick="event.stopPropagation(); openEditTaskModal(' + task.id + ')" title="' + tip + '">';
+  if (subs.length) {
+    h += '<span class="day-task-toggle" onclick="event.stopPropagation(); toggleCalendarTask(' + task.id + ')" title="'
+      + subs.length + (fr ? ' sous-tâche(s) ce jour' : ' subtask(s) this day') + '">' + (open ? '▾' : '▸') + subs.length + '</span>';
+  }
+  h += healthBadge(task) + sanitize(task.Title) + '</div>';
+  if (open) {
+    subs.forEach(function(st) {
+      var mile = st.Type === 'milestone';
+      h += '<div class="day-subtask' + (st.Completed ? ' done' : '') + (mile ? ' milestone' : '') + '"'
+        + ' onclick="event.stopPropagation(); openEditTaskModal(' + task.id + ')" title="' + sanitize(st.Title) + ' — ' + sanitize(task.Title) + '">'
+        + (mile ? '◆ ' : '↳ ') + sanitize(st.Title) + '</div>';
+    });
+  }
+  return h;
+}
+
 function getTasksForDate(date) {
   var dateStart = new Date(date);
   dateStart.setHours(0, 0, 0, 0);
@@ -3538,7 +4245,7 @@ function renderCalendarWeekView() {
   for (var d = 0; d < 7; d++) {
     var dayDate = new Date(weekStartDate.getFullYear(), weekStartDate.getMonth(), weekStartDate.getDate() + d);
     var isToday = dayDate.getTime() === today.getTime();
-    var dayTasks = getTasksForDate(dayDate);
+    var dayTasks = getCalendarEntriesForDate(dayDate);
     daysHtml += renderCalendarDay(dayDate.getDate(), dayDate, dayTasks, false, isToday, true);
   }
 
@@ -3592,7 +4299,7 @@ function renderCalendarMobileView() {
     var dayDate = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + d);
     var isToday = dayDate.getTime() === today.getTime();
     var isWeekend = d >= 5;
-    var dayTasks = getTasksForDate(dayDate);
+    var dayTasks = getCalendarEntriesForDate(dayDate);
     var dateStr = dayDate.getFullYear() + '-' + String(dayDate.getMonth() + 1).padStart(2, '0') + '-' + String(dayDate.getDate()).padStart(2, '0');
 
     var cls = 'calendar-day' + (isToday ? ' today' : '') + (isWeekend ? ' weekend' : '');
@@ -3603,8 +4310,7 @@ function renderCalendarMobileView() {
     html += '</div>';
     html += '<div class="day-tasks">';
     for (var i = 0; i < dayTasks.length; i++) {
-      var task = dayTasks[i];
-      html += '<div class="day-task status-' + task.Status + '" onclick="event.stopPropagation(); openEditTaskModal(' + task.id + ')" title="' + sanitize(task.Title) + '">' + sanitize(task.Title) + '</div>';
+      html += renderCalendarEntry(dayTasks[i], false);
     }
     if (dayTasks.length === 0) {
       html += '<span class="mobile-no-task">\u2014</span>';
@@ -3686,6 +4392,15 @@ function renderCalendarDayView() {
       t.Start_Date <= dayEndTs;
     return dueThisDay || inProgressThisDay || inProgressNoEnd;
   });
+  // Tâches amenées ce jour par l'une de leurs sous-tâches
+  var viaSubtask = {};
+  filteredTasks.forEach(function(t) {
+    if (dayTasks.indexOf(t) !== -1) return;
+    if (getTaskSubtasks(t.id).some(function(st) { return subtaskOnDay(st, dayStartTs, dayEndTs); })) {
+      viaSubtask[t.id] = true;
+      dayTasks.push(t);
+    }
+  });
 
   var statusColors = { todo: '#94a3b8', progress: '#3b82f6', done: '#22c55e' };
   var priorityColors = { high: '#ef4444', medium: '#f59e0b', low: '#22c55e' };
@@ -3711,7 +4426,8 @@ function renderCalendarDayView() {
       html += '<div class="day-task-row" onclick="openEditTaskModal(' + task.id + ')">';
       html += '<div class="day-task-indicator" style="background:' + stColor + '"></div>';
       html += '<div class="day-task-body">';
-      html += '<div class="day-task-title">' + sanitize(task.Title) + ' ' + dueBadge + '</div>';
+      if (viaSubtask[task.id]) dueBadge = '<span class="day-due-badge ongoing">↳ ' + (currentLang === 'fr' ? 'Sous-tâche ce jour' : 'Subtask today') + '</span>';
+      html += '<div class="day-task-title">' + healthBadge(task) + sanitize(task.Title) + ' ' + dueBadge + '</div>';
       html += '<div class="day-task-meta">';
       if (task.Assignee) html += '<span>👤 ' + sanitize(task.Assignee.split(',')[0].trim()) + '</span>';
       html += '<span style="color:' + priorityColors[task.Priority] + ';">▲ ' + task.Priority + '</span>';
@@ -3722,7 +4438,7 @@ function renderCalendarDayView() {
       if (taskSubtasks.length > 0) {
         html += '<div class="day-subtasks">';
         taskSubtasks.forEach(function(st) {
-          html += '<div class="day-subtask-item">';
+          html += '<div class="day-subtask-item' + (subtaskOnDay(st, dayStartTs, dayEndTs) ? ' on-day' : '') + '">';
           html += '<input type="checkbox" ' + (st.Completed ? 'checked' : '') + ' onclick="event.stopPropagation();toggleSubtask(' + st.id + ', ' + !st.Completed + ')" />';
           html += '<span class="' + (st.Completed ? 'st-done' : '') + '">' + sanitize(st.Title) + '</span>';
           if (st.Assignee) html += '<span class="day-st-assignee">👤 ' + sanitize(st.Assignee) + '</span>';
@@ -3758,12 +4474,15 @@ function openNewTaskForDay(dateStr) {
 
 function setKanbanGroupBy(value) {
   kanbanGroupBy = value;
+  persistViewPrefs();
   renderKanbanView();
 }
 
 function setKanbanSort(value) {
   kanbanSort = value;
-  saveSetting('kanban_sort', value);
+  // Le tri était écrit dans PM_Settings, donc dans le document : le changer chez
+  // soi le changeait pour toute l'équipe. Il suit maintenant l'utilisateur.
+  persistViewPrefs();
   renderKanbanView();
 }
 
@@ -3939,7 +4658,7 @@ function renderTaskCard(task) {
 
   html += '<div class="task-card-header">';
   html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
-  html += '<div class="task-card-title" style="cursor:pointer;" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
+  html += '<div class="task-card-title" style="cursor:pointer;" onclick="openEditTaskModal(' + task.id + ')">' + (cd.health !== false ? healthBadge(task) : '') + sanitize(task.Title) + '</div>';
   if (cd.priority) html += '<span class="priority-badge priority-' + (task.Priority || 'medium') + '" style="font-size:11px;">' + priorityLabel(task.Priority) + '</span>';
   html += '</div>';
   html += '<div class="task-card-actions">';
@@ -4019,7 +4738,7 @@ function renderTaskCard(task) {
       html += '<span style="font-size:10px;color:' + catColor + ';font-weight:700;">| ' + sanitize(task.Category) + '</span>';
     }
     if (cd.tags && task.Tag) {
-      var tagList = task.Tag.split(',').map(function(tg) { return tg.trim(); }).filter(Boolean);
+      var tagList = taskTags(task);
       for (var ti = 0; ti < tagList.length; ti++) {
         var tagObj = tags.find(function(tg) { return tg.Name === tagList[ti]; });
         var tagColor = tagObj ? tagObj.Color : '#94a3b8';
@@ -4305,7 +5024,7 @@ function renderTableView() {
     } else {
       html += '<span style="width:18px;"></span>';
     }
-    html += '<div><div style="font-weight:700;">' + sanitize(task.Title) + '</div>';
+    html += '<div><div style="font-weight:700;">' + healthBadge(task) + sanitize(task.Title) + '</div>';
     if (task.Description) html += '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">' + sanitize(task.Description).substring(0, 80) + '</div>';
     html += '</div></div></td>';
     html += '<td>' + (taskProjName ? '<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:50%;background:' + taskProjColor + ';display:inline-block;"></span>' + sanitize(taskProjName) + '</span>' : '') + '</td>';
@@ -5423,6 +6142,10 @@ function renderTemplatesView() {
     if (tpl.Category) html += '🏷️ ' + sanitize(tpl.Category);
     html += ' <span class="priority-dot ' + dotClass + '"></span> ' + priorityLabel(tpl.Priority);
     if (tpl.Estimated_Hours) html += ' ⏱️ ' + tpl.Estimated_Hours + 'h';
+    var tplProj = tpl.Project_Id ? getProjectName(tpl.Project_Id) : '';
+    if (tplProj) html += ' 📂 ' + sanitize(tplProj);
+    var tplSubs = templateSubtasks(tpl);
+    if (tplSubs.length) html += ' ☑️ ' + tplSubs.length + ' ' + (currentLang === 'fr' ? 'sous-tâche' + (tplSubs.length > 1 ? 's' : '') : 'subtask' + (tplSubs.length > 1 ? 's' : ''));
     html += ' 📊 ' + (tpl.Usage_Count || 0) + ' ' + (currentLang === 'fr' ? 'utilisations' : 'uses');
     if (tpl.Updated_At) html += ' • ' + (currentLang === 'fr' ? 'Mis à jour le ' : 'Updated ') + formatDate(tpl.Updated_At);
     html += '</div></div>';
@@ -5456,8 +6179,8 @@ function renderUsersList() {
   if (!container) return;
 
   // Apply role filter so the Équipe tab respects the active role selection
-  var displayedUsers = currentFilterRole
-    ? users.filter(function(u) { return userMatchesRole(u, currentFilterRole); })
+  var displayedUsers = currentFilterRoles.length
+    ? users.filter(function(u) { return currentFilterRoles.some(function(r) { return userMatchesRole(u, r); }); })
     : users;
 
   if (displayedUsers.length === 0) {
@@ -5483,7 +6206,8 @@ function renderUsersList() {
     html += '<td style="font-weight:700;">👤 ' + sanitize(u.Name) + '</td>';
     html += '<td>' + sanitize(u.Email) + '</td>';
     html += '<td><span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:' + roleBg + '">' + sanitize(roleText) + '</span></td>';
-    html += '<td>' + (u.Group_Name ? '<span class="assignee-chip">👥 ' + sanitize(u.Group_Name) + '</span>' : '--') + '</td>';
+    var uGroups = getUserGroups(u);
+    html += '<td>' + (uGroups.length ? uGroups.map(function(gn) { return '<span class="assignee-chip">👥 ' + sanitize(gn) + '</span>'; }).join(' ') : '--') + '</td>';
     html += '<td><button class="btn-icon" onclick="openEditUserModal(' + u.id + ')" title="' + t('edit') + '">✏️</button>';
     html += '<button class="btn-icon" onclick="deleteUser(' + u.id + ')">🗑️</button></td>';
     html += '</tr>';
@@ -5491,6 +6215,18 @@ function renderUsersList() {
 
   html += '</tbody></table>';
   container.innerHTML = html;
+}
+
+function groupPickOptions() {
+  return sortByLabel(groups.map(function(g) { return { value: g.Name, label: g.Name }; }));
+}
+
+// Les groupes d'une personne sont stockés « a, b » : une virgule dans un nom de
+// groupe le couperait en deux à la relecture.
+function groupNameOk(name) {
+  if (name.indexOf(',') === -1) return true;
+  showToast(currentLang === 'fr' ? 'Un nom de groupe ne peut pas contenir de virgule' : 'A group name cannot contain a comma', 'error');
+  return false;
 }
 
 function renderGroupsList() {
@@ -5505,8 +6241,8 @@ function renderGroupsList() {
   var html = '';
   for (var i = 0; i < groups.length; i++) {
     var g = groups[i];
-    var memberCount = users.filter(function(u) { return u.Group_Name === g.Name; }).length;
-    var memberNames = users.filter(function(u) { return u.Group_Name === g.Name; }).map(function(u) { return u.Name || u.Email; });
+    var memberNames = users.filter(function(u) { return userInGroup(u, g.Name); }).map(function(u) { return u.Name || u.Email; });
+    var memberCount = memberNames.length;
 
     html += '<div class="template-card">';
     html += '<div class="template-card-info">';
@@ -5826,11 +6562,7 @@ async function openEditUserModal(userId) {
   var user = users.find(function(u) { return u.id === userId; });
   if (!user) return;
 
-  var groupOptions = '<option value="">--</option>';
-  for (var i = 0; i < groups.length; i++) {
-    var sel = groups[i].Name === user.Group_Name ? ' selected' : '';
-    groupOptions += '<option value="' + sanitize(groups[i].Name) + '"' + sel + '>' + sanitize(groups[i].Name) + '</option>';
-  }
+  var groupPicker = renderChipPicker('user-group', groupPickOptions(), getUserGroups(user), currentLang === 'fr' ? '+ Ajouter un groupe' : '+ Add a group');
 
   var roleChoices = await getRoleChoicesFromGrist();
 
@@ -5852,7 +6584,7 @@ async function openEditUserModal(userId) {
     html += '<option value="' + sanitize(r) + '"' + sel + '>' + sanitize(roleLabel(r)) + '</option>';
   }
   html += '</select></div>';
-  html += '<div class="form-group"><label>' + t('fieldGroup') + '</label><select id="user-group">' + groupOptions + '</select></div>';
+  html += '<div class="form-group"><label>' + (currentLang === 'fr' ? 'Groupes' : 'Groups') + '</label>' + groupPicker + '</div>';
   html += '</div>';
   html += '</div>';
   html += '<div class="modal-footer">';
@@ -5907,7 +6639,7 @@ async function updateUser(userId) {
 
 async function updateGroup(groupId) {
   var name = document.getElementById('group-name').value.trim();
-  if (!name) return;
+  if (!name || !groupNameOk(name)) return;
 
   try {
     await grist.docApi.applyUserActions([
@@ -5926,10 +6658,7 @@ async function updateGroup(groupId) {
 }
 
 async function openNewUserModal() {
-  var groupOptions = '<option value="">--</option>';
-  for (var i = 0; i < groups.length; i++) {
-    groupOptions += '<option value="' + sanitize(groups[i].Name) + '">' + sanitize(groups[i].Name) + '</option>';
-  }
+  var groupPicker = renderChipPicker('user-group', groupPickOptions(), [], currentLang === 'fr' ? '+ Ajouter un groupe' : '+ Add a group');
 
   var roleChoices = await getRoleChoicesFromGrist();
 
@@ -5947,7 +6676,7 @@ async function openNewUserModal() {
     html += '<option value="' + sanitize(r) + '"' + sel + '>' + sanitize(roleLabel(r)) + '</option>';
   }
   html += '</select></div>';
-  html += '<div class="form-group"><label>' + t('fieldGroup') + '</label><select id="user-group">' + groupOptions + '</select></div>';
+  html += '<div class="form-group"><label>' + (currentLang === 'fr' ? 'Groupes' : 'Groups') + '</label>' + groupPicker + '</div>';
   html += '</div>';
   html += '</div>';
   html += '<div class="modal-footer">';
@@ -5999,7 +6728,7 @@ async function createUser() {
 
 async function createGroup() {
   var name = document.getElementById('group-name').value.trim();
-  if (!name) return;
+  if (!name || !groupNameOk(name)) return;
 
   var record = {
     Name: name,
@@ -6233,7 +6962,10 @@ async function startNewTask(defaultStatus, dateStr, prefill) {
   if (prefill.tag) setField(record, 'tasks', 'tag', prefill.tag);
   if (prefill.recurrence && prefill.recurrence !== 'none') setField(record, 'tasks', 'recurrence', prefill.recurrence);
   if (prefill.estimatedHours) setField(record, 'tasks', 'estimatedHours', prefill.estimatedHours);
-  if (currentProjectId) setField(record, 'tasks', 'projectId', currentProjectId);
+  // Le projet du modèle l'emporte sur le projet filtré : c'est lui qu'on a choisi
+  // en rédigeant le modèle. Encore faut-il qu'il existe toujours.
+  var prefillProject = prefill.projectId && projects.some(function(p) { return p.id === prefill.projectId; }) ? prefill.projectId : 0;
+  if (prefillProject || currentProjectId) setField(record, 'tasks', 'projectId', prefillProject || currentProjectId);
   setField(record, 'tasks', 'createdAt', Math.floor(Date.now() / 1000));
   record.Auto_Extend = true;
   if (dateStr) { setField(record, 'tasks', 'startDate', toEpoch(dateStr)); setField(record, 'tasks', 'dueDate', toEpoch(dateStr)); }
@@ -6242,6 +6974,12 @@ async function startNewTask(defaultStatus, dateStr, prefill) {
     var newId = (res && res.retValues && res.retValues[0]) || null;
     if (!newId) { showToast('Error', 'error'); return; }
     draftTaskId = newId;
+    if (prefill.subtasks && prefill.subtasks.length) {
+      var nowSec = Math.floor(Date.now() / 1000);
+      await grist.docApi.applyUserActions(prefill.subtasks.map(function(title, idx) {
+        return ['AddRecord', SUBTASKS_TABLE, null, { Parent_Task_Id: newId, Title: title, Completed: false, Order: idx + 1, Created_At: nowSec }];
+      }));
+    }
     await loadAllData();
     openEditTaskModal(newId);
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
@@ -6393,20 +7131,31 @@ function openEditTaskModal(taskId, preserveAssignees) {
   html += '<div class="detail-field-value"><select id="task-category">' + categoryOptions + '</select></div>';
   html += '</div>';
 
-  // Tag
-  var tagOptions = '<option value="">--</option>';
-  for (var ti = 0; ti < tags.length; ti++) {
-    var tagSel = tags[ti].Name === task.Tag ? ' selected' : '';
-    tagOptions += '<option value="' + sanitize(tags[ti].Name) + '"' + tagSel + '>' + sanitize(tags[ti].Name) + '</option>';
-  }
+  // Tags — plusieurs par tâche
+  var tagPickOptions = tags.map(function(tg) { return { value: tg.Name, label: tg.Name, color: tg.Color }; })
+    .sort(function(a, b) { return String(a.label).localeCompare(String(b.label)); });
   html += '<div class="detail-field">';
   html += '<span class="detail-field-icon">🏷️</span>';
-  html += '<span class="detail-field-label">' + t('tag') + '</span>';
-  html += '<div class="detail-field-value"><select id="task-tag">' + tagOptions + '</select></div>';
+  html += '<span class="detail-field-label">' + (currentLang === 'fr' ? 'Tags' : 'Tags') + '</span>';
+  html += '<div class="detail-field-value">' + renderChipPicker('task-tag', tagPickOptions, taskTags(task), currentLang === 'fr' ? '+ Ajouter un tag' : '+ Add a tag') + '</div>';
   html += '</div>';
+
+  // Météo
+  if (hasHealthColumn) {
+    html += '<div class="detail-field">';
+    html += '<span class="detail-field-icon">🌤️</span>';
+    html += '<span class="detail-field-label">' + (currentLang === 'fr' ? 'Météo' : 'Health') + '</span>';
+    html += '<div class="detail-field-value"><div class="st-pill-group">';
+    HEALTH_STATES.forEach(function(h) {
+      html += '<button type="button" class="st-pill' + (task.Health === h.key ? ' active-progress' : '') + '" data-health="' + h.key + '" onclick="setTaskHealth(\'' + h.key + '\', this)">' + h.emoji + ' ' + sanitize(healthLabel(h)) + '</button>';
+    });
+    html += '</div><input type="hidden" id="task-health" value="' + sanitize(task.Health || '') + '"></div>';
+    html += '</div>';
+  }
 
   // === SUBTASKS SECTION ===
   var taskSubtasks = getTaskSubtasks(task.id);
+  var archivedSubtasks = getTaskSubtasks(task.id, true);
   html += '<div class="subtasks-section">';
   html += '<div class="subtasks-header">';
   html += '<span class="detail-field-icon">☑️</span>';
@@ -6457,6 +7206,7 @@ function openEditTaskModal(taskId, preserveAssignees) {
       if (st.Recurrence && st.Recurrence !== 'none') {
         html += '<button class="subtask-dep-btn" onclick="generateSubtaskOccurrences(' + st.id + ', ' + task.id + ')" title="' + t('generateMonth') + '">📅+</button>';
       }
+      if (hasSubtaskArchiveColumn) html += '<button class="subtask-dep-btn" onclick="archiveSubtask(' + st.id + ', ' + task.id + ', true)" title="' + (currentLang === 'fr' ? 'Archiver la sous-tâche' : 'Archive subtask') + '">📦</button>';
       html += '<button class="subtask-edit-btn" onclick="startEditSubtask(' + st.id + ', ' + task.id + ')" title="' + t('editSubtask') + '">✏️</button>';
       html += '<button class="subtask-dep-btn" onclick="openSubtaskDepModal(' + st.id + ', ' + task.id + ')" title="' + t('dependencies') + '">🔗</button>';
       html += '<button class="subtask-delete" onclick="deleteSubtask(' + st.id + ', ' + task.id + ')" title="' + t('delete') + '">✕</button>';
@@ -6560,6 +7310,35 @@ function openEditTaskModal(taskId, preserveAssignees) {
   html += '<input type="text" id="new-subtask-input" class="subtask-input" placeholder="' + t('subtaskPlaceholder') + '" onkeypress="if(event.key===\'Enter\')addSubtask(' + task.id + ')" />';
   html += '<button class="subtask-add-btn" onclick="addSubtask(' + task.id + ')">+</button>';
   html += '</div>';
+
+  // Archive de la tâche : les sous-tâches rangées, pour qu'une tâche permanente
+  // garde une liste courte sans perdre son historique.
+  if (hasSubtaskArchiveColumn) {
+    var doneCount = taskSubtasks.filter(function(st) { return st.Completed; }).length;
+    var archOpen = !!expandedSubtaskArchives[task.id];
+    html += '<div class="subtask-archive">';
+    html += '<div class="subtask-archive-bar">';
+    html += '<button type="button" class="subtask-archive-toggle" onclick="toggleSubtaskArchive(' + task.id + ')">' + (archOpen ? '▾' : '▸') + ' 📦 ' + (currentLang === 'fr' ? 'Archive' : 'Archive') + ' <span class="subtask-badge">' + archivedSubtasks.length + '</span></button>';
+    if (doneCount > 0) html += '<button type="button" class="subtask-archive-all" onclick="archiveCompletedSubtasks(' + task.id + ')">' + (currentLang === 'fr' ? (doneCount > 1 ? 'Archiver les ' + doneCount + ' terminées' : 'Archiver la sous-tâche terminée') : 'Archive ' + doneCount + ' completed') + '</button>';
+    html += '</div>';
+    if (archOpen) {
+      html += '<div class="subtask-archive-list">';
+      if (archivedSubtasks.length === 0) {
+        html += '<div class="subtasks-empty">' + (currentLang === 'fr' ? 'Aucune sous-tâche archivée' : 'No archived subtask') + '</div>';
+      }
+      archivedSubtasks.forEach(function(ast) {
+        html += '<div class="subtask-item archived" data-id="' + ast.id + '"><div class="subtask-view">';
+        html += '<span style="width:18px;text-align:center;">' + (ast.Completed ? '✅' : '▫️') + '</span>';
+        html += '<span class="subtask-title">' + sanitize(ast.Title) + '</span>';
+        if (ast.Due_Date) html += '<span class="subtask-due-badge">📅 ' + formatDate(ast.Due_Date) + '</span>';
+        html += '<button class="subtask-dep-btn" onclick="archiveSubtask(' + ast.id + ', ' + task.id + ', false)" title="' + (currentLang === 'fr' ? 'Restaurer' : 'Restore') + '">♻️</button>';
+        html += '<button class="subtask-delete" onclick="deleteSubtask(' + ast.id + ', ' + task.id + ')" title="' + t('delete') + '">✕</button>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  }
   html += '</div>';
 
   // === DEPENDENCIES SECTION ===
@@ -7034,6 +7813,7 @@ async function persistTaskFormFields(taskId) {
   if ((el = document.getElementById('task-project'))) setField(record, 'tasks', 'projectId', el.value ? parseInt(el.value) : 0);
   if ((el = document.getElementById('task-recurrence'))) setField(record, 'tasks', 'recurrence', el.value);
   if ((el = document.getElementById('task-tag'))) setField(record, 'tasks', 'tag', el.value.trim());
+  if (hasHealthColumn && (el = document.getElementById('task-health'))) record.Health = el.value;
   if ((el = document.getElementById('task-extension-date'))) record.Extension_Date = toEpoch(el.value);
   if ((el = document.getElementById('task-auto-extend'))) record.Auto_Extend = el.checked;
   try { await grist.docApi.applyUserActions([['UpdateRecord', TASKS_TABLE, taskId, record]]); }
@@ -7124,6 +7904,54 @@ async function toggleSubtask(subtaskId, completed) {
   } catch (e) {
     console.error('Error toggling subtask:', e);
   }
+}
+
+var expandedSubtaskArchives = {}; // taskId -> true quand l'archive de la tâche est dépliée
+
+function toggleSubtaskArchive(taskId) {
+  var scrollPos = getModalScrollTop();
+  expandedSubtaskArchives[taskId] = !expandedSubtaskArchives[taskId];
+  // On ne reconstruit pas la modale depuis les données : la saisie en cours
+  // (titre, description…) y serait perdue. On fige d'abord, puis on rouvre.
+  reopenTaskModalKeepingInput(taskId, scrollPos);
+}
+
+// Fige la saisie en cours dans le document, recharge, puis rouvre la modale au
+// même endroit. Toute opération qui redessine la modale doit passer par là.
+async function reopenTaskModalKeepingInput(taskId, scrollPos, action) {
+  var saved = [editAssignees.slice(), editAccountable.slice(), editConsulted.slice(), editInformed.slice()];
+  await persistTaskFormFields(taskId);
+  try {
+    if (action) await action();
+    await loadAllData();
+  } catch (e) {
+    console.error('reopenTaskModalKeepingInput:', e);
+    showToast('Error: ' + e.message, 'error');
+  }
+  editAssignees = saved[0]; editAccountable = saved[1]; editConsulted = saved[2]; editInformed = saved[3];
+  openEditTaskModal(taskId, true);
+  restoreModalScrollTop(scrollPos);
+}
+
+async function archiveSubtask(subtaskId, parentTaskId, archived) {
+  var scrollPos = getModalScrollTop();
+  await reopenTaskModalKeepingInput(parentTaskId, scrollPos, async function() {
+    await grist.docApi.applyUserActions([['UpdateRecord', SUBTASKS_TABLE, subtaskId, { Archived: !!archived }]]);
+    showToast(archived ? (currentLang === 'fr' ? 'Sous-tâche archivée' : 'Subtask archived')
+                       : (currentLang === 'fr' ? 'Sous-tâche restaurée' : 'Subtask restored'), 'success');
+  });
+}
+
+async function archiveCompletedSubtasks(parentTaskId) {
+  var done = getTaskSubtasks(parentTaskId).filter(function(st) { return st.Completed; });
+  if (!done.length) return;
+  var scrollPos = getModalScrollTop();
+  await reopenTaskModalKeepingInput(parentTaskId, scrollPos, async function() {
+    await grist.docApi.applyUserActions(done.map(function(st) {
+      return ['UpdateRecord', SUBTASKS_TABLE, st.id, { Archived: true }];
+    }));
+    showToast(done.length + (currentLang === 'fr' ? ' sous-tâche(s) archivée(s)' : ' subtask(s) archived'), 'success');
+  });
 }
 
 async function deleteSubtask(subtaskId, parentTaskId) {
@@ -7856,10 +8684,20 @@ function openNewTemplateModal(tplId) {
   var tplGroupOpts = '<option value="">--</option>';
   for (var tgi = 0; tgi < groups.length; tgi++) tplGroupOpts += '<option value="' + sanitize(groups[tgi].Name) + '"' + (groups[tgi].Name === tplGroup ? ' selected' : '') + '>' + sanitize(groups[tgi].Name) + '</option>';
   html += '<div class="form-group"><label>' + t('fieldGroup') + '</label><select id="tpl-group">' + tplGroupOpts + '</select></div>';
-  var tplTagOpts = '<option value="">--</option>';
-  for (var tti = 0; tti < tags.length; tti++) tplTagOpts += '<option value="' + sanitize(tags[tti].Name) + '"' + (tags[tti].Name === tplTag ? ' selected' : '') + '>' + sanitize(tags[tti].Name) + '</option>';
-  html += '<div class="form-group"><label>' + t('tag') + '</label><select id="tpl-tag">' + tplTagOpts + '</select></div>';
+  var tplTagPick = sortByLabel(tags.map(function(tg) { return { value: tg.Name, label: tg.Name, color: tg.Color }; }));
+  html += '<div class="form-group"><label>Tags</label>' + renderChipPicker('tpl-tag', tplTagPick, splitList(tplTag), currentLang === 'fr' ? '+ Ajouter un tag' : '+ Add a tag') + '</div>';
   html += '</div>';
+  if (hasTemplateExtras) {
+    // Projet de rattachement
+    var tplProjId = editing ? (tpl.Project_Id || 0) : 0;
+    var tplProjOpts = '<option value="">' + t('noProject') + '</option>';
+    for (var tpi = 0; tpi < projects.length; tpi++) tplProjOpts += '<option value="' + projects[tpi].id + '"' + (projects[tpi].id === tplProjId ? ' selected' : '') + '>' + sanitize(projects[tpi].Name) + '</option>';
+    html += '<div class="form-group"><label>📂 ' + t('project') + '</label><select id="tpl-project">' + tplProjOpts + '</select></div>';
+    // Sous-tâches créées avec la tâche
+    html += '<div class="form-group"><label>☑️ ' + (currentLang === 'fr' ? 'Sous-tâches (une par ligne)' : 'Subtasks (one per line)') + '</label>';
+    html += '<textarea id="tpl-subtasks" rows="5" placeholder="' + (currentLang === 'fr' ? 'Rédiger le cahier des charges\nConsulter les entreprises\nAnalyser les offres' : 'Write the specification\nConsult contractors\nReview the offers') + '">' + sanitize(editing ? (tpl.Subtasks || '') : '') + '</textarea>';
+    html += '<div class="view-help" style="margin:4px 0 0;">' + (currentLang === 'fr' ? 'Elles sont ajoutées à chaque tâche créée depuis ce modèle.' : 'They are added to every task created from this template.') + '</div></div>';
+  }
   // Récurrence
   var recurKeys = ['none', 'daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly'];
   var recurLabels = { none: 'recurrenceNone', daily: 'recurrenceDaily', weekly: 'recurrenceWeekly', biweekly: 'recurrenceBiweekly', monthly: 'recurrenceMonthly', quarterly: 'recurrenceQuarterly', yearly: 'recurrenceYearly' };
@@ -7891,7 +8729,10 @@ function closeModalForce() {
     var ti = document.getElementById('task-title');
     var titleVal = ti ? ti.value.trim() : '';
     if (titleVal) { updateTask(did); return; } // updateTask enregistre, ferme et recharge
-    grist.docApi.applyUserActions([['RemoveRecord', TASKS_TABLE, did]])
+    // Un brouillon né d'un modèle porte déjà des sous-tâches : elles partent avec lui.
+    var orphanActions = subtasks.filter(function (st) { return st.Parent_Task_Id === did; })
+      .map(function (st) { return ['RemoveRecord', SUBTASKS_TABLE, st.id]; });
+    grist.docApi.applyUserActions(orphanActions.concat([['RemoveRecord', TASKS_TABLE, did]]))
       .then(function () { return loadAllData(); })
       .then(function () { refreshAllViews(); })
       .catch(function () {});
@@ -8005,6 +8846,9 @@ async function updateTask(taskId) {
     setField(record, 'tasks', 'tag', tagEl.value.trim());
   }
 
+  var healthEl = document.getElementById('task-health');
+  if (hasHealthColumn && healthEl) record.Health = healthEl.value;
+
   // Extension fields
   var extDateEl = document.getElementById('task-extension-date');
   if (extDateEl) record.Extension_Date = toEpoch(extDateEl.value);
@@ -8074,6 +8918,16 @@ async function deleteTask(taskId) {
   }
 }
 
+// Projet et sous-tâches du modèle — seulement si les colonnes existent, sans quoi
+// l'enregistrement entier serait refusé.
+function readTemplateExtras(record) {
+  if (!hasTemplateExtras) return;
+  var p = document.getElementById('tpl-project');
+  var s = document.getElementById('tpl-subtasks');
+  if (p) record.Project_Id = p.value ? parseInt(p.value, 10) : 0;
+  if (s) record.Subtasks = s.value.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(Boolean).join('\n');
+}
+
 async function createTemplate() {
   var title = document.getElementById('tpl-title').value.trim();
   if (!title) return;
@@ -8090,6 +8944,7 @@ async function createTemplate() {
     Usage_Count: 0,
     Updated_At: Math.floor(Date.now() / 1000)
   };
+  readTemplateExtras(record);
 
   try {
     await grist.docApi.applyUserActions([
@@ -8118,6 +8973,7 @@ async function updateTemplate(tplId) {
     Recurrence: (document.getElementById('tpl-recurrence') || {}).value || 'none',
     Updated_At: Math.floor(Date.now() / 1000)
   };
+  readTemplateExtras(record);
 
   try {
     await grist.docApi.applyUserActions([
@@ -8167,7 +9023,9 @@ async function useTemplate(tplId) {
     group: tpl.Group_Name || '',
     tag: tpl.Tag || '',
     recurrence: tpl.Recurrence || 'none',
-    estimatedHours: tpl.Estimated_Hours || 0
+    estimatedHours: tpl.Estimated_Hours || 0,
+    projectId: tpl.Project_Id || 0,
+    subtasks: templateSubtasks(tpl)
   });
 }
 
@@ -9134,7 +9992,8 @@ function renderCardDisplaySettings() {
     { key: 'category',    label: currentLang === 'fr' ? 'Catégorie' : 'Category' },
     { key: 'time',        label: currentLang === 'fr' ? 'Temps passé' : 'Time spent' },
     { key: 'subtasks',    label: currentLang === 'fr' ? 'Sous-tâches' : 'Subtasks' },
-    { key: 'comments',    label: currentLang === 'fr' ? 'Commentaires' : 'Comments' }
+    { key: 'comments',    label: currentLang === 'fr' ? 'Commentaires' : 'Comments' },
+    { key: 'health',      label: currentLang === 'fr' ? 'Météo de la tâche' : 'Task health' }
   ];
   var html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
   for (var i = 0; i < fields.length; i++) {
@@ -10765,9 +11624,14 @@ if (!isInsideGrist()) {
     updateNotificationBadge();
     await resolveDocKey();            // B1 : filtres cloisonnes par document
     restoreFilters(); // conserver les filtres en changeant de page / au rechargement
+    restoreViewPrefs();
     renderProjectSelector();
     refreshAllViews();
-    restoreActiveTab();
+    // À l'ouverture, la vue par défaut de l'utilisateur l'emporte sur l'état laissé
+    // la dernière fois ; sans vue par défaut, on rouvre comme avant.
+    var _myView = getMyDefaultView();
+    if (_myView) applyViewSnapshot(_myView);
+    else restoreActiveTab();
     // Synchronise les choix de la colonne Status des sous-tâches avec les statuts personnalisés
     if (isOwner) syncSubtaskStatusChoices();
 
