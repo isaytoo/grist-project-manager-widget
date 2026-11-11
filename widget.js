@@ -5,7 +5,7 @@
 // Version affichée à côté du titre et en pied de page. À incrémenter en même
 // temps que le ?v= de index.html : si les deux divergent, l'interface annonce
 // une version que le navigateur n'a pas forcément chargée.
-var WIDGET_VERSION = 'v140';
+var WIDGET_VERSION = 'v141';
 (function () {
   ['widget-version', 'widget-version-footer'].forEach(function (id) {
     var el = document.getElementById(id);
@@ -5388,6 +5388,352 @@ function ganttAfterRender() {
   requestAnimationFrame(function() { ganttCenterOnToday(); });
 }
 
+// =============================================================================
+// GANTT — un seul rendu, piloté par une grille de colonnes
+// =============================================================================
+//
+// Le Gantt était dessiné par quatre blocs presque identiques (jours, semaines,
+// mois, années), chacun avec son en-tête, ses lignes de tâches et ses lignes de
+// sous-tâches. Une grille décrit maintenant ce qui les distingue :
+//
+//   cols       colonnes de la période, chacune { start, end }
+//   colWidth   largeur d'une colonne, en pixels
+//   geom       position d'une barre : { idx, left, width } ou null
+//   extGeom    position de la prolongation d'une tâche, ou null
+//   head       <thead> complet
+//   footer     pied du diagramme
+//   cellTask / cellSub   balise ouvrante de chaque cellule, ligne de tâche / de sous-tâche
+//   lineTask / lineSub   trait du jour à poser dans la cellule (ou chaîne vide)
+//
+// et ganttRenderRows() dessine les lignes sans rien savoir de l'échelle.
+// Le rendu est tenu identique à celui d'avant par tests/t7-gantt.js.
+
+// Barre calée sur des colonnes entières : de la première à la dernière colonne
+// retenue par `garder`. Les échelles Jours et Années placent ainsi leurs barres.
+function ganttSnapGeom(cols, colWidth, garder) {
+  var first = -1, last = -1;
+  for (var i = 0; i < cols.length; i++) {
+    if (garder(cols[i])) { if (first === -1) first = i; last = i; }
+  }
+  return first === -1 ? null : { idx: first, left: 2, width: (last - first + 1) * colWidth };
+}
+
+function ganttOverlaps(start, end) {
+  return function(col) { return start <= col.end && end >= col.start; };
+}
+
+// ---- Échelle Semaines ----
+function ganttGridWeeks(ctx) {
+  var today = ctx.today, monthNames = ctx.monthNames;
+  var weekColW = 80;
+  // Semaines ISO engendrees de proche en proche depuis le lundi de reference :
+  // l'ancien calcul (numero + annee courante) se trompait d'annee autour de
+  // janvier/decembre.
+  var weekAnchor = new Date(ganttYear, ganttMonth, 1);
+  weekAnchor.setDate(weekAnchor.getDate() - 56);
+  var wsFirst = new Date(weekAnchor);
+  wsFirst.setDate(wsFirst.getDate() - ((wsFirst.getDay() + 6) % 7)); // lundi
+  wsFirst.setHours(0, 0, 0, 0);
+  var numWeeks = 34;
+  var weeks = [];
+  for (var w = 0; w < numWeeks; w++) {
+    var ws = new Date(wsFirst);
+    ws.setDate(ws.getDate() + w * 7);
+    var we = new Date(ws);
+    we.setDate(we.getDate() + 6);
+    we.setHours(23, 59, 59, 999);
+    weeks.push({ num: getISOWeek(ws), year: ws.getFullYear(), start: ws, end: we });
+  }
+  var weekIsCurrent = function(wk) { return today >= wk.start && today <= wk.end; };
+
+  // En-tete compact : ligne de regroupement par mois + ligne des numeros de semaine
+  var head = '<thead><tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
+  var prevWm = -1, prevWy = -1;
+  for (var wi = 0; wi < weeks.length; wi++) {
+    var wm = weeks[wi].start.getMonth(), wy = weeks[wi].start.getFullYear();
+    if (wm !== prevWm || wy !== prevWy) {
+      var wSpan = 0;
+      for (var wj = wi; wj < weeks.length && weeks[wj].start.getMonth() === wm && weeks[wj].start.getFullYear() === wy; wj++) wSpan++;
+      head += '<th colspan="' + wSpan + '" style="font-size:11px;font-weight:700;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">' + monthNames[wm].toUpperCase() + ' ' + String(wy).substring(2) + '</th>';
+      prevWm = wm; prevWy = wy;
+    }
+  }
+  head += '</tr><tr>';
+  for (var wi2 = 0; wi2 < weeks.length; wi2++) {
+    head += '<th' + (weekIsCurrent(weeks[wi2]) ? ' id="gantt-today-col" class="today"' : '') + ' style="min-width:' + weekColW + 'px;">S' + weeks[wi2].num + '</th>';
+  }
+  head += '</tr></thead>';
+
+  // Position du jour courant DANS sa colonne (trait rouge vertical)
+  var wTodayIdx = -1, wTodayPct = 0;
+  for (var wi3 = 0; wi3 < weeks.length; wi3++) {
+    if (weekIsCurrent(weeks[wi3])) {
+      wTodayIdx = wi3;
+      wTodayPct = Math.round((today - weeks[wi3].start) / (weeks[wi3].end - weeks[wi3].start) * 100);
+      break;
+    }
+  }
+
+  var cell = [], lineTask = [], none = [];
+  for (var c = 0; c < weeks.length; c++) {
+    cell.push('<td class="gantt-cell' + (c === wTodayIdx ? ' today-col' : '') + '" style="position:relative;min-width:' + weekColW + 'px;">');
+    // Le trait du jour n'est posé que sur les lignes de tâche à cette échelle.
+    lineTask.push(c === wTodayIdx ? '<div style="position:absolute;top:0;bottom:0;left:' + wTodayPct + '%;width:2px;background:#ef4444;z-index:1;pointer-events:none;"></div>' : '');
+    none.push('');
+  }
+
+  var footer = '<div class="gantt-footer">'
+    + '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + ctx.count + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>'
+    + '<span>' + t('ganttViewRange') + ' ' + monthNames[weeks[0].start.getMonth()] + ' - ' + monthNames[weeks[weeks.length - 1].start.getMonth()] + ' ' + ganttYear + '</span>'
+    + '</div>';
+
+  return {
+    cols: weeks, colWidth: weekColW, head: head, footer: footer,
+    cellTask: cell, cellSub: cell, lineTask: lineTask, lineSub: none,
+    // C2 : geometrie au jour pres a l'interieur de la semaine
+    geom: function(s, e) { return ganttBarGeom(s, e, weeks, weekColW); },
+    extGeom: function(tEnd, extEnd) { return (extEnd && tEnd && extEnd > tEnd) ? ganttBarGeom(tEnd, extEnd, weeks, weekColW) : null; }
+  };
+}
+
+// ---- Échelle Années (une ou deux années, une colonne par mois) ----
+function ganttGridYears(ctx, numYears) {
+  var today = ctx.today, monthNamesShort = ctx.monthNamesShort;
+  var totalMonths = numYears * 12;
+  var startYr = ganttYear;
+  var colWidth = numYears === 2 ? 50 : 70;
+  var todayMonth = today.getMonth();
+  var todayYear = today.getFullYear();
+
+  var cols = [];
+  for (var ym = 0; ym < totalMonths; ym++) {
+    var yr = startYr + Math.floor(ym / 12), mo = ym % 12;
+    cols.push({ start: new Date(yr, mo, 1), end: new Date(yr, mo + 1, 0, 23, 59, 59, 999), current: (yr === todayYear && mo === todayMonth), mo: mo });
+  }
+
+  var head = '<thead>';
+  if (numYears === 2) {
+    head += '<tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
+    head += '<th colspan="12" style="font-size:12px;font-weight:800;background:#f8fafc;">' + startYr + '</th>';
+    head += '<th colspan="12" style="font-size:12px;font-weight:800;background:#f8fafc;">' + (startYr + 1) + '</th>';
+    head += '</tr><tr>';
+  } else {
+    head += '<tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
+  }
+  cols.forEach(function(c) {
+    head += '<th' + (c.current ? ' id="gantt-today-col"' : '') + ' style="min-width:' + colWidth + 'px;' + (c.current ? 'background:#fef2f2;color:#ef4444;' : '') + '">' + monthNamesShort[c.mo].substring(0, 3) + '</th>';
+  });
+  head += '</tr></thead>';
+
+  var cellTask = [], cellSub = [], none = [];
+  cols.forEach(function(c) {
+    // Le mois courant n'est teinté que sur les lignes de tâche.
+    cellTask.push('<td class="gantt-cell" style="position:relative;min-width:' + colWidth + 'px;' + (c.current ? 'background:#fef2f2;' : '') + '">');
+    cellSub.push('<td class="gantt-cell" style="position:relative;min-width:' + colWidth + 'px;">');
+    none.push('');
+  });
+
+  var rangeLabel = numYears === 2 ? (startYr + ' - ' + (startYr + 1)) : String(startYr);
+  var footer = '<div class="gantt-footer">'
+    + '<span>🌟 ' + t('ganttFullYear') + ' • ' + ctx.count + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>'
+    + '<span>' + t('ganttViewRange') + ' ' + rangeLabel + '</span>'
+    + '</div>';
+
+  return {
+    cols: cols, colWidth: colWidth, head: head, footer: footer,
+    cellTask: cellTask, cellSub: cellSub, lineTask: none, lineSub: none,
+    geom: function(s, e) { return (s && e) ? ganttSnapGeom(cols, colWidth, ganttOverlaps(s, e)) : null; },
+    extGeom: function(tEnd, extEnd) {
+      if (!(extEnd && tEnd && extEnd > tEnd)) return null;
+      // Démarrer la prolongation le mois SUIVANT la fin de tâche (évite le chevauchement)
+      return ganttSnapGeom(cols, colWidth, function(c) { return c.start > tEnd && extEnd >= c.start; });
+    }
+  };
+}
+
+// ---- Échelle Mois (une année, barres au jour près) ----
+function ganttGridMonths(ctx) {
+  var today = ctx.today, monthNames = ctx.monthNames;
+  // C3 : les colonnes s'elargissent pour occuper toute la largeur disponible
+  // (le diagramme laissait la moitie de l'ecran vide).
+  var ganttHost = document.getElementById('gantt-view');
+  var availW = ganttHost ? ganttHost.clientWidth : 0;
+  var monthColW = Math.max(80, Math.floor(((availW || 1100) - 236) / 12));
+
+  var months = [];
+  for (var m = 0; m < 12; m++) {
+    months.push({ start: new Date(ganttYear, m, 1, 0, 0, 0, 0), end: new Date(ganttYear, m + 1, 0, 23, 59, 59, 999) });
+  }
+  var todayMonth = today.getMonth();
+  var todayYear = today.getFullYear();
+  var todayDayPct = (todayYear === ganttYear) ? Math.round((today.getDate() - 1) / new Date(ganttYear, todayMonth + 1, 0).getDate() * 100) : -1;
+
+  var head = '<thead><tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
+  var cell = [], line = [];
+  for (var m2 = 0; m2 < 12; m2++) {
+    var isCurrentMonth = (ganttYear === todayYear && m2 === todayMonth);
+    head += '<th' + (isCurrentMonth ? ' id="gantt-today-col" class="today"' : '') + ' style="min-width:' + monthColW + 'px;">' + monthNames[m2].substring(0, 3).toUpperCase() + '</th>';
+    cell.push('<td class="gantt-cell' + (isCurrentMonth ? ' today-col' : '') + '" style="position:relative;min-width:' + monthColW + 'px;">');
+    line.push((isCurrentMonth && todayDayPct >= 0) ? '<div style="position:absolute;top:0;bottom:0;left:' + todayDayPct + '%;width:2px;background:#ef4444;z-index:1;pointer-events:none;"></div>' : '');
+  }
+  head += '</tr></thead>';
+
+  var footer = '<div class="gantt-footer">'
+    + '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + ctx.count + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>'
+    + '<span>' + t('ganttViewRange') + ' ' + monthNames[0] + ' - ' + monthNames[11] + ' ' + ganttYear + '</span>'
+    + '</div>';
+
+  return {
+    cols: months, colWidth: monthColW, head: head, footer: footer,
+    cellTask: cell, cellSub: cell, lineTask: line, lineSub: line,
+    // C3 : geometrie au jour pres a l'interieur du mois
+    geom: function(s, e) { return ganttBarGeom(s, e, months, monthColW); },
+    extGeom: function(tEnd, extEnd) { return (extEnd && tEnd && extEnd > tEnd) ? ganttBarGeom(tEnd, extEnd, months, monthColW) : null; }
+  };
+}
+
+// ---- Échelle Jours (et mode Personnalisé : mêmes colonnes-jours sur une plage libre) ----
+function ganttGridDays(ctx) {
+  var today = ctx.today, monthNames = ctx.monthNames, dayNames = ctx.dayNames;
+  var dayColW = 36;
+  var startDate, endDate;
+  if (ganttMode === 'custom' && ganttCustomStart && ganttCustomEnd) {
+    startDate = new Date(ganttCustomStart + 'T00:00:00');
+    endDate = new Date(ganttCustomEnd + 'T00:00:00');
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate < startDate) {
+      // Plage invalide → repli sur la fenêtre par défaut
+      startDate = new Date(ganttYear, ganttMonth - 1, 1);
+      endDate = new Date(ganttYear, ganttMonth + 2, 0);
+    } else {
+      // Limiter à ~400 jours pour éviter une grille démesurée
+      var maxEnd = new Date(startDate); maxEnd.setDate(maxEnd.getDate() + 400);
+      if (endDate > maxEnd) endDate = maxEnd;
+    }
+  } else {
+    startDate = new Date(ganttYear, ganttMonth - 1, 1);
+    endDate = new Date(ganttYear, ganttMonth + 2, 0);
+  }
+  var days = [];
+  var d = new Date(startDate);
+  while (d <= endDate) {
+    var ds = new Date(d);
+    var de = new Date(d); de.setHours(23, 59, 59, 999);
+    days.push({ start: ds, end: de });
+    d.setDate(d.getDate() + 1);
+  }
+
+  // Month header row
+  var head = '<thead><tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
+  var prevMonth = -1;
+  for (var di0 = 0; di0 < days.length; di0++) {
+    var dm = days[di0].start.getMonth();
+    if (dm !== prevMonth) {
+      var colspan = 0;
+      for (var di1 = di0; di1 < days.length && days[di1].start.getMonth() === dm; di1++) colspan++;
+      head += '<th colspan="' + colspan + '" style="font-size:11px;font-weight:700;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">' + monthNames[dm].toUpperCase() + '</th>';
+      prevMonth = dm;
+    }
+  }
+  head += '</tr><tr>';
+  var cell = [], none = [];
+  for (var di = 0; di < days.length; di++) {
+    var dd = days[di].start;
+    var isToday = dd.getTime() === today.getTime();
+    var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
+    head += '<th' + (isToday ? ' id="gantt-today-col"' : '') + ' class="' + (isToday ? 'today' : '') + (isWeekend ? ' weekend' : '') + '">';
+    head += '<div>' + dd.getDate() + '</div>';
+    head += '<div style="font-size:8px;">' + dayNames[dd.getDay()] + '</div>';
+    head += '</th>';
+    cell.push('<td class="gantt-cell ' + (isToday ? 'today-col' : '') + (isWeekend ? ' weekend-col' : '') + '">');
+    none.push('');
+  }
+  head += '</tr></thead>';
+
+  var footer = '<div class="gantt-footer">'
+    + '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + ctx.count + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>'
+    + '<span>' + t('ganttViewRange') + ' ' + monthNames[startDate.getMonth()] + ' - ' + monthNames[endDate.getMonth()] + ' ' + ganttYear + '</span>'
+    + '</div>';
+
+  return {
+    cols: days, colWidth: dayColW, head: head, footer: footer,
+    cellTask: cell, cellSub: cell, lineTask: none, lineSub: none,
+    geom: function(s, e) { return (s && e) ? ganttSnapGeom(days, dayColW, ganttOverlaps(s, e)) : null; },
+    extGeom: function(tEnd, extEnd) {
+      if (!(extEnd && tEnd)) return null;
+      // À cette échelle la prolongation part du jour d'échéance lui-même, et se
+      // dessine même si elle s'achève ce jour-là.
+      var endDay = new Date(tEnd); endDay.setHours(0, 0, 0, 0);
+      if (!(extEnd > endDay)) return null;
+      var extDay = new Date(extEnd); extDay.setHours(0, 0, 0, 0);
+      return ganttSnapGeom(days, dayColW, function(c) { return c.start >= endDay && c.start <= extDay; });
+    }
+  };
+}
+
+function ganttBuildGrid(ctx) {
+  if (ganttMode === 'weeks') return ganttGridWeeks(ctx);
+  if (ganttMode === 'year') return ganttGridYears(ctx, 1);
+  if (ganttMode === 'twoyears') return ganttGridYears(ctx, 2);
+  if (ganttMode === 'months') return ganttGridMonths(ctx);
+  return ganttGridDays(ctx);
+}
+
+// Lignes du diagramme : une par tâche, plus ses sous-tâches si elle est dépliée.
+function ganttRenderRows(list, grid) {
+  var html = '';
+  var n = grid.cols.length;
+  for (var ti = 0; ti < list.length; ti++) {
+    var task = list[ti];
+    var barClass = getGanttBarClass(task);
+    var barCustomColor = getGanttBarColor(task);
+    var barCustomStyle = barCustomColor ? 'background:' + barCustomColor + ';color:white;' : '';
+    html += '<tr>' + renderGanttTaskLabel(task);
+
+    var tStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
+    var tEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
+    if (!tStart && tEnd) tStart = new Date(tEnd);
+    if (!tEnd && tStart) tEnd = new Date(tStart);
+    if (tStart) tStart.setHours(0, 0, 0, 0);
+    if (tEnd) tEnd.setHours(23, 59, 59, 999);
+
+    var geom = grid.geom(tStart, tEnd);
+    var extGeom = grid.extGeom(tEnd, getTaskExtensionEnd(task));
+    var extColor = getExtensionBarColor(task);
+
+    for (var i = 0; i < n; i++) {
+      html += grid.cellTask[i] + grid.lineTask[i];
+      if (geom && i === geom.idx) {
+        html += '<div class="gantt-bar ' + barClass + '" style="left:' + geom.left + 'px;width:' + geom.width + 'px;cursor:pointer;' + barCustomStyle + '" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
+      }
+      if (extGeom && i === extGeom.idx) {
+        html += '<div class="gantt-bar-extension" title="' + t('extensionTooltip') + ' — ' + sanitize(task.Title) + '" style="left:' + extGeom.left + 'px;width:' + extGeom.width + 'px;border-color:' + extColor + ';background:' + extColor + '20;"></div>';
+      }
+      html += '</td>';
+    }
+    html += '</tr>';
+
+    if (expandedGanttTasks[task.id]) {
+      var sts = getGanttSubtasks(task.id);
+      for (var sti = 0; sti < sts.length; sti++) {
+        var st = sts[sti];
+        var stRange = getGanttSubtaskRange(st, task);
+        var stBarClass = ganttSubtaskBarClass(st, task);
+        var stGeom = grid.geom(stRange.start, stRange.end);
+        html += '<tr class="gantt-subtask-row">' + renderGanttSubtaskLabelCell(st, task.id);
+        for (var j = 0; j < n; j++) {
+          html += grid.cellSub[j] + grid.lineSub[j];
+          if (stGeom && j === stGeom.idx) {
+            html += '<div class="gantt-bar gantt-bar-subtask ' + stBarClass + '" style="left:' + stGeom.left + 'px;width:' + stGeom.width + 'px;cursor:pointer;" title="' + sanitize(st.Title) + '" onclick="openEditTaskModal(' + task.id + ')"></div>';
+          }
+          html += '</td>';
+        }
+        html += '</tr>';
+      }
+    }
+  }
+  return html;
+}
+
 function renderGanttView() {
   var yearSelect = document.getElementById('gantt-year');
   if (yearSelect.options.length === 0) {
@@ -5440,516 +5786,11 @@ function renderGanttView() {
     ? ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
     : ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-  var html = '<div class="gantt-container"><table class="gantt-table">';
-
-  // ===== WEEKS MODE =====
-  if (ganttMode === 'weeks') {
-    var weekColW = 80;
-    // Semaines ISO engendrees de proche en proche depuis le lundi de reference :
-    // l'ancien calcul (numero + annee courante) se trompait d'annee autour de
-    // janvier/decembre.
-    var weekAnchor = new Date(ganttYear, ganttMonth, 1);
-    weekAnchor.setDate(weekAnchor.getDate() - 56);
-    var wsFirst = new Date(weekAnchor);
-    wsFirst.setDate(wsFirst.getDate() - ((wsFirst.getDay() + 6) % 7)); // lundi
-    wsFirst.setHours(0, 0, 0, 0);
-    var numWeeks = 34;
-    var weeks = [];
-    for (var w = 0; w < numWeeks; w++) {
-      var ws = new Date(wsFirst);
-      ws.setDate(ws.getDate() + w * 7);
-      var we = new Date(ws);
-      we.setDate(we.getDate() + 6);
-      we.setHours(23, 59, 59, 999);
-      weeks.push({ num: getISOWeek(ws), year: ws.getFullYear(), start: ws, end: we });
-    }
-    var weekIsCurrent = function(wk) { return today >= wk.start && today <= wk.end; };
-
-    // En-tete compact : ligne de regroupement par mois + ligne des numeros de semaine
-    html += '<thead><tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
-    var prevWm = -1, prevWy = -1;
-    for (var wi = 0; wi < weeks.length; wi++) {
-      var wm = weeks[wi].start.getMonth(), wy = weeks[wi].start.getFullYear();
-      if (wm !== prevWm || wy !== prevWy) {
-        var wSpan = 0;
-        for (var wj = wi; wj < weeks.length && weeks[wj].start.getMonth() === wm && weeks[wj].start.getFullYear() === wy; wj++) wSpan++;
-        html += '<th colspan="' + wSpan + '" style="font-size:11px;font-weight:700;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">' + monthNames[wm].toUpperCase() + ' ' + String(wy).substring(2) + '</th>';
-        prevWm = wm; prevWy = wy;
-      }
-    }
-    html += '</tr><tr>';
-    for (var wi = 0; wi < weeks.length; wi++) {
-      var wk = weeks[wi];
-      var isCurrentWeek = weekIsCurrent(wk);
-      html += '<th' + (isCurrentWeek ? ' id="gantt-today-col" class="today"' : '') + ' style="min-width:' + weekColW + 'px;">S' + wk.num + '</th>';
-    }
-    html += '</tr></thead><tbody>';
-
-    // Position du jour courant DANS sa colonne (trait rouge vertical)
-    var wTodayIdx = -1, wTodayPct = 0;
-    for (var wi = 0; wi < weeks.length; wi++) {
-      if (weekIsCurrent(weeks[wi])) {
-        wTodayIdx = wi;
-        wTodayPct = Math.round((today - weeks[wi].start) / (weeks[wi].end - weeks[wi].start) * 100);
-        break;
-      }
-    }
-
-    // Task rows
-    for (var ti = 0; ti < tasksWithDates.length; ti++) {
-      var task = tasksWithDates[ti];
-      var barClass = getGanttBarClass(task);
-      var barCustomColor = getGanttBarColor(task);
-      var barCustomStyle = barCustomColor ? 'background:' + barCustomColor + ';color:white;' : '';
-      html += '<tr>';
-      html += renderGanttTaskLabel(task);
-
-      var tStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
-      var tEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
-      if (!tStart && tEnd) tStart = new Date(tEnd);
-      if (!tEnd && tStart) tEnd = new Date(tStart);
-      if (tStart) tStart.setHours(0, 0, 0, 0);
-      if (tEnd) tEnd.setHours(23, 59, 59, 999);
-
-      // C2 : geometrie au jour pres a l'interieur de la semaine
-      var wGeom = ganttBarGeom(tStart, tEnd, weeks, weekColW);
-      var extEnd = getTaskExtensionEnd(task);
-      var wExtGeom = (extEnd && tEnd && extEnd > tEnd) ? ganttBarGeom(tEnd, extEnd, weeks, weekColW) : null;
-      var extColor = getExtensionBarColor(task);
-
-      for (var wi = 0; wi < weeks.length; wi++) {
-        html += '<td class="gantt-cell' + (wi === wTodayIdx ? ' today-col' : '') + '" style="position:relative;min-width:' + weekColW + 'px;">';
-        if (wi === wTodayIdx) {
-          html += '<div style="position:absolute;top:0;bottom:0;left:' + wTodayPct + '%;width:2px;background:#ef4444;z-index:1;pointer-events:none;"></div>';
-        }
-        if (wGeom && wi === wGeom.idx) {
-          html += '<div class="gantt-bar ' + barClass + '" style="left:' + wGeom.left + 'px;width:' + wGeom.width + 'px;cursor:pointer;' + barCustomStyle + '" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
-        }
-        if (wExtGeom && wi === wExtGeom.idx) {
-          html += '<div class="gantt-bar-extension" title="' + t('extensionTooltip') + ' — ' + sanitize(task.Title) + '" style="left:' + wExtGeom.left + 'px;width:' + wExtGeom.width + 'px;border-color:' + extColor + ';background:' + extColor + '20;"></div>';
-        }
-        html += '</td>';
-      }
-
-      html += '</tr>';
-
-      // === Lignes sous-taches (mode Semaines) ===
-      if (expandedGanttTasks[task.id]) {
-        var sts = getGanttSubtasks(task.id);
-        for (var sti = 0; sti < sts.length; sti++) {
-          var st = sts[sti];
-          var stRange = getGanttSubtaskRange(st, task);
-          var stBarClass = ganttSubtaskBarClass(st, task);
-          var stGeom = ganttBarGeom(stRange.start, stRange.end, weeks, weekColW);
-          html += '<tr class="gantt-subtask-row">' + renderGanttSubtaskLabelCell(st, task.id);
-          for (var wi2 = 0; wi2 < weeks.length; wi2++) {
-            html += '<td class="gantt-cell' + (wi2 === wTodayIdx ? ' today-col' : '') + '" style="position:relative;min-width:' + weekColW + 'px;">';
-            if (stGeom && wi2 === stGeom.idx) {
-              html += '<div class="gantt-bar gantt-bar-subtask ' + stBarClass + '" style="left:' + stGeom.left + 'px;width:' + stGeom.width + 'px;cursor:pointer;" title="' + sanitize(st.Title) + '" onclick="openEditTaskModal(' + task.id + ')"></div>';
-            }
-            html += '</td>';
-          }
-          html += '</tr>';
-        }
-      }
-    }
-
-    // Footer
-    var viewStartMonth = monthNames[weeks[0].start.getMonth()];
-    var viewEndMonth = monthNames[weeks[weeks.length - 1].start.getMonth()];
-    html += '</tbody></table>';
-    html += '<div class="gantt-footer">';
-    html += '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>';
-    html += '<span>' + t('ganttViewRange') + ' ' + viewStartMonth + ' - ' + viewEndMonth + ' ' + ganttYear + '</span>';
-    html += '</div></div>';
-
-    document.getElementById('gantt-view').innerHTML = html;
-    initGanttDragScroll();
-    return;
-  }
-
-  // ===== YEAR / TWOYEARS MODE =====
-  if (ganttMode === 'year' || ganttMode === 'twoyears') {
-    var numYears = ganttMode === 'twoyears' ? 2 : 1;
-    var totalMonths = numYears * 12;
-    var startYr = ganttYear;
-    var colWidth = ganttMode === 'twoyears' ? 50 : 70;
-
-    var todayMonth = today.getMonth();
-    var todayYear = today.getFullYear();
-
-    html += '<thead>';
-    if (ganttMode === 'twoyears') {
-      html += '<tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
-      html += '<th colspan="12" style="font-size:12px;font-weight:800;background:#f8fafc;">' + startYr + '</th>';
-      html += '<th colspan="12" style="font-size:12px;font-weight:800;background:#f8fafc;">' + (startYr + 1) + '</th>';
-      html += '</tr><tr>';
-    } else {
-      html += '<tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
-    }
-    for (var ym = 0; ym < totalMonths; ym++) {
-      var yr = startYr + Math.floor(ym / 12);
-      var mo = ym % 12;
-      var isCurrent = (yr === todayYear && mo === todayMonth);
-      html += '<th' + (isCurrent ? ' id="gantt-today-col"' : '') + ' style="min-width:' + colWidth + 'px;' + (isCurrent ? 'background:#fef2f2;color:#ef4444;' : '') + '">' + monthNamesShort[mo].substring(0, 3) + '</th>';
-    }
-    html += '</tr></thead><tbody>';
-
-    for (var ti = 0; ti < tasksWithDates.length; ti++) {
-      var task = tasksWithDates[ti];
-      var barClass = getGanttBarClass(task);
-      var barCustomColor = getGanttBarColor(task);
-      var barCustomStyle = barCustomColor ? 'background:' + barCustomColor + ';color:white;' : '';
-      html += '<tr>' + renderGanttTaskLabel(task);
-
-      var yTStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
-      var yTEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
-      if (!yTStart && yTEnd) yTStart = new Date(yTEnd);
-      if (!yTEnd && yTStart) yTEnd = new Date(yTStart);
-      if (yTStart) yTStart.setHours(0, 0, 0, 0);
-      if (yTEnd) yTEnd.setHours(23, 59, 59, 999);
-
-      var yBarStart = -1, yBarEnd = -1;
-      for (var ym = 0; ym < totalMonths; ym++) {
-        var yr = startYr + Math.floor(ym / 12);
-        var mo = ym % 12;
-        var ms = new Date(yr, mo, 1);
-        var me = new Date(yr, mo + 1, 0, 23, 59, 59, 999);
-        if (yTStart && yTEnd && yTStart <= me && yTEnd >= ms) {
-          if (yBarStart === -1) yBarStart = ym;
-          yBarEnd = ym;
-        }
-      }
-
-      var yExtEnd = getTaskExtensionEnd(task);
-      var yExtStart = -1, yExtEndIdx = -1;
-      if (yExtEnd && yTEnd && yExtEnd > yTEnd) {
-        for (var yme = 0; yme < totalMonths; yme++) {
-          var yre = startYr + Math.floor(yme / 12); var moe = yme % 12;
-          var mse = new Date(yre, moe, 1); var mee = new Date(yre, moe + 1, 0, 23, 59, 59, 999);
-          // Démarrer la prolongation le mois SUIVANT la fin de tâche (évite le chevauchement)
-          if (mse > yTEnd && yExtEnd >= mse) { if (yExtStart === -1) yExtStart = yme; yExtEndIdx = yme; }
-        }
-      }
-      var yExtColor = getExtensionBarColor(task);
-
-      for (var ym = 0; ym < totalMonths; ym++) {
-        var yr2 = startYr + Math.floor(ym / 12);
-        var mo2 = ym % 12;
-        var isCurrent2 = (yr2 === todayYear && mo2 === todayMonth);
-        html += '<td class="gantt-cell" style="position:relative;min-width:' + colWidth + 'px;' + (isCurrent2 ? 'background:#fef2f2;' : '') + '">';
-        if (ym === yBarStart) {
-          var yBarW = (yBarEnd - yBarStart + 1) * colWidth;
-          html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + yBarW + 'px;cursor:pointer;' + barCustomStyle + '" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
-        }
-        if (ym === yExtStart && yExtStart >= 0) {
-          var yExtW = (yExtEndIdx - yExtStart + 1) * colWidth;
-          html += '<div class="gantt-bar-extension" title="' + t('extensionTooltip') + ' — ' + sanitize(task.Title) + '" style="left:2px;width:' + yExtW + 'px;border-color:' + yExtColor + ';background:' + yExtColor + '20;"></div>';
-        }
-        html += '</td>';
-      }
-      html += '</tr>';
-
-      if (expandedGanttTasks[task.id]) {
-        var sts = getGanttSubtasks(task.id);
-        for (var sti = 0; sti < sts.length; sti++) {
-          var st = sts[sti];
-          var stRange = getGanttSubtaskRange(st, task);
-          var stBarClass = ganttSubtaskBarClass(st, task);
-          html += '<tr class="gantt-subtask-row">' + renderGanttSubtaskLabelCell(st, task.id);
-          var stYStart = -1, stYEnd = -1;
-          for (var ym3 = 0; ym3 < totalMonths; ym3++) {
-            var yr3 = startYr + Math.floor(ym3 / 12);
-            var mo3 = ym3 % 12;
-            var ms3 = new Date(yr3, mo3, 1);
-            var me3 = new Date(yr3, mo3 + 1, 0, 23, 59, 59, 999);
-            if (stRange.start <= me3 && stRange.end >= ms3) {
-              if (stYStart === -1) stYStart = ym3;
-              stYEnd = ym3;
-            }
-          }
-          for (var ym3 = 0; ym3 < totalMonths; ym3++) {
-            html += '<td class="gantt-cell" style="position:relative;min-width:' + colWidth + 'px;">';
-            if (ym3 === stYStart) {
-              var stYW = (stYEnd - stYStart + 1) * colWidth;
-              html += '<div class="gantt-bar gantt-bar-subtask ' + stBarClass + '" style="left:2px;width:' + stYW + 'px;cursor:pointer;" title="' + sanitize(st.Title) + '" onclick="openEditTaskModal(' + task.id + ')"></div>';
-            }
-            html += '</td>';
-          }
-          html += '</tr>';
-        }
-      }
-    }
-
-    html += '</tbody></table>';
-    html += '<div class="gantt-footer">';
-    var rangeLabel = ganttMode === 'twoyears' ? (startYr + ' - ' + (startYr + 1)) : String(startYr);
-    html += '<span>🌟 ' + t('ganttFullYear') + ' • ' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>';
-    html += '<span>' + t('ganttViewRange') + ' ' + rangeLabel + '</span>';
-    html += '</div></div>';
-
-    document.getElementById('gantt-view').innerHTML = html;
-    initGanttDragScroll();
-    return;
-  }
-
-  // ===== MONTHS MODE =====
-  if (ganttMode === 'months') {
-    // C3 : les colonnes s'elargissent pour occuper toute la largeur disponible
-    // (le diagramme laissait la moitie de l'ecran vide).
-    var ganttHost = document.getElementById('gantt-view');
-    var availW = ganttHost ? ganttHost.clientWidth : 0;
-    var monthColW = Math.max(80, Math.floor(((availW || 1100) - 236) / 12));
-
-    var months = [];
-    for (var m = 0; m < 12; m++) {
-      months.push({ start: new Date(ganttYear, m, 1, 0, 0, 0, 0), end: new Date(ganttYear, m + 1, 0, 23, 59, 59, 999) });
-    }
-
-    var todayMonth = today.getMonth();
-    var todayYear = today.getFullYear();
-    var todayDayPct = (todayYear === ganttYear) ? Math.round((today.getDate() - 1) / new Date(ganttYear, todayMonth + 1, 0).getDate() * 100) : -1;
-
-    html += '<thead><tr><th class="gantt-task-label" style="text-align:left;">' + t('colTaskName') + '</th>';
-    for (var m = 0; m < 12; m++) {
-      var isCurrentMonth = (ganttYear === todayYear && m === todayMonth);
-      html += '<th' + (isCurrentMonth ? ' id="gantt-today-col" class="today"' : '') + ' style="min-width:' + monthColW + 'px;">' + monthNames[m].substring(0, 3).toUpperCase() + '</th>';
-    }
-    html += '</tr></thead><tbody>';
-
-    for (var ti = 0; ti < tasksWithDates.length; ti++) {
-      var task = tasksWithDates[ti];
-      var barClass = getGanttBarClass(task);
-      var barCustomColor = getGanttBarColor(task);
-      var barCustomStyle = barCustomColor ? 'background:' + barCustomColor + ';color:white;' : '';
-      html += '<tr>';
-      html += renderGanttTaskLabel(task);
-
-      var mTStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
-      var mTEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
-      if (!mTStart && mTEnd) mTStart = new Date(mTEnd);
-      if (!mTEnd && mTStart) mTEnd = new Date(mTStart);
-      if (mTStart) mTStart.setHours(0, 0, 0, 0);
-      if (mTEnd) mTEnd.setHours(23, 59, 59, 999);
-
-      // C3 : geometrie au jour pres a l'interieur du mois
-      var mGeom = ganttBarGeom(mTStart, mTEnd, months, monthColW);
-      var mExtEnd = getTaskExtensionEnd(task);
-      var mExtGeom = (mExtEnd && mTEnd && mExtEnd > mTEnd) ? ganttBarGeom(mTEnd, mExtEnd, months, monthColW) : null;
-      var mExtColor = getExtensionBarColor(task);
-
-      for (var m = 0; m < 12; m++) {
-        var isTodayMonth = (ganttYear === todayYear && m === todayMonth);
-        html += '<td class="gantt-cell' + (isTodayMonth ? ' today-col' : '') + '" style="position:relative;min-width:' + monthColW + 'px;">';
-        if (isTodayMonth && todayDayPct >= 0) {
-          html += '<div style="position:absolute;top:0;bottom:0;left:' + todayDayPct + '%;width:2px;background:#ef4444;z-index:1;pointer-events:none;"></div>';
-        }
-        if (mGeom && m === mGeom.idx) {
-          html += '<div class="gantt-bar ' + barClass + '" style="left:' + mGeom.left + 'px;width:' + mGeom.width + 'px;cursor:pointer;' + barCustomStyle + '" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
-        }
-        if (mExtGeom && m === mExtGeom.idx) {
-          html += '<div class="gantt-bar-extension" title="' + t('extensionTooltip') + ' — ' + sanitize(task.Title) + '" style="left:' + mExtGeom.left + 'px;width:' + mExtGeom.width + 'px;border-color:' + mExtColor + ';background:' + mExtColor + '20;"></div>';
-        }
-        html += '</td>';
-      }
-      html += '</tr>';
-
-      // === Lignes sous-taches (mode Mois) ===
-      if (expandedGanttTasks[task.id]) {
-        var sts = getGanttSubtasks(task.id);
-        for (var sti = 0; sti < sts.length; sti++) {
-          var st = sts[sti];
-          var stRange = getGanttSubtaskRange(st, task);
-          var stBarClass = ganttSubtaskBarClass(st, task);
-          var stGeom = ganttBarGeom(stRange.start, stRange.end, months, monthColW);
-          html += '<tr class="gantt-subtask-row">' + renderGanttSubtaskLabelCell(st, task.id);
-          for (var m2 = 0; m2 < 12; m2++) {
-            var isTodayMonth2 = (ganttYear === todayYear && m2 === todayMonth);
-            html += '<td class="gantt-cell' + (isTodayMonth2 ? ' today-col' : '') + '" style="position:relative;min-width:' + monthColW + 'px;">';
-            if (isTodayMonth2 && todayDayPct >= 0) {
-              html += '<div style="position:absolute;top:0;bottom:0;left:' + todayDayPct + '%;width:2px;background:#ef4444;z-index:1;pointer-events:none;"></div>';
-            }
-            if (stGeom && m2 === stGeom.idx) {
-              html += '<div class="gantt-bar gantt-bar-subtask ' + stBarClass + '" style="left:' + stGeom.left + 'px;width:' + stGeom.width + 'px;cursor:pointer;" title="' + sanitize(st.Title) + '" onclick="openEditTaskModal(' + task.id + ')"></div>';
-            }
-            html += '</td>';
-          }
-          html += '</tr>';
-        }
-      }
-    }
-
-    html += '</tbody></table>';
-    html += '<div class="gantt-footer">';
-    html += '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>';
-    html += '<span>' + t('ganttViewRange') + ' ' + monthNames[0] + ' - ' + monthNames[11] + ' ' + ganttYear + '</span>';
-    html += '</div></div>';
-
-    document.getElementById('gantt-view').innerHTML = html;
-    initGanttDragScroll();
-    return;
-  }
-
-  // ===== DAYS MODE (et mode PERSONNALISÉ : mêmes colonnes-jours sur une plage libre) =====
-  var startDate, endDate;
-  if (ganttMode === 'custom' && ganttCustomStart && ganttCustomEnd) {
-    startDate = new Date(ganttCustomStart + 'T00:00:00');
-    endDate = new Date(ganttCustomEnd + 'T00:00:00');
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate < startDate) {
-      // Plage invalide → repli sur la fenêtre par défaut
-      startDate = new Date(ganttYear, ganttMonth - 1, 1);
-      endDate = new Date(ganttYear, ganttMonth + 2, 0);
-    } else {
-      // Limiter à ~400 jours pour éviter une grille démesurée
-      var maxEnd = new Date(startDate); maxEnd.setDate(maxEnd.getDate() + 400);
-      if (endDate > maxEnd) endDate = maxEnd;
-    }
-  } else {
-    startDate = new Date(ganttYear, ganttMonth - 1, 1);
-    endDate = new Date(ganttYear, ganttMonth + 2, 0);
-  }
-  var days = [];
-  var d = new Date(startDate);
-  while (d <= endDate) {
-    days.push(new Date(d));
-    d.setDate(d.getDate() + 1);
-  }
-
-  // Month header row
-  html += '<thead><tr><th class="gantt-task-label" style="text-align:left;" rowspan="2">' + t('colTaskName') + '</th>';
-  var prevMonth = -1;
-  for (var di0 = 0; di0 < days.length; di0++) {
-    var dm = days[di0].getMonth();
-    if (dm !== prevMonth) {
-      var colspan = 0;
-      for (var di1 = di0; di1 < days.length && days[di1].getMonth() === dm; di1++) colspan++;
-      html += '<th colspan="' + colspan + '" style="font-size:11px;font-weight:700;color:#475569;background:#f8fafc;border-bottom:1px solid #e2e8f0;">' + monthNames[dm].toUpperCase() + '</th>';
-      prevMonth = dm;
-    }
-  }
-  html += '</tr><tr>';
-  for (var di = 0; di < days.length; di++) {
-    var dd = days[di];
-    var isToday = dd.getTime() === today.getTime();
-    var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
-    html += '<th' + (isToday ? ' id="gantt-today-col"' : '') + ' class="' + (isToday ? 'today' : '') + (isWeekend ? ' weekend' : '') + '">';
-    html += '<div>' + dd.getDate() + '</div>';
-    html += '<div style="font-size:8px;">' + dayNames[dd.getDay()] + '</div>';
-    html += '</th>';
-  }
-  html += '</tr></thead><tbody>';
-
-  for (var ti = 0; ti < tasksWithDates.length; ti++) {
-    var task = tasksWithDates[ti];
-    var barClass = getGanttBarClass(task);
-    var barCustomColor = getGanttBarColor(task);
-    var barCustomStyle = barCustomColor ? 'background:' + barCustomColor + ';color:white;' : '';
-    html += '<tr>';
-    html += renderGanttTaskLabel(task);
-
-    var tStart = task.Start_Date ? new Date(task.Start_Date * 1000) : null;
-    var tEnd = task.Due_Date ? new Date(task.Due_Date * 1000) : null;
-    if (!tStart && tEnd) tStart = tEnd;
-    if (!tEnd && tStart) tEnd = tStart;
-    if (tStart) tStart.setHours(0, 0, 0, 0);
-    if (tEnd) tEnd.setHours(0, 0, 0, 0);
-
-    var barStartIdx = -1, barEndIdx = -1;
-    if (tStart && tEnd) {
-      for (var di = 0; di < days.length; di++) {
-        var dday = days[di];
-        if (dday >= tStart && dday <= tEnd) {
-          if (barStartIdx === -1) barStartIdx = di;
-          barEndIdx = di;
-        }
-      }
-      if (barStartIdx === -1 && tStart < days[0] && tEnd >= days[0]) {
-        barStartIdx = 0;
-        for (var di2 = 0; di2 < days.length; di2++) {
-          if (days[di2] <= tEnd) barEndIdx = di2;
-        }
-      }
-    }
-
-    var dExtEnd = getTaskExtensionEnd(task);
-    var dExtStartIdx = -1, dExtEndIdx = -1;
-    if (dExtEnd && tEnd && dExtEnd > tEnd) {
-      var dExtDay = new Date(dExtEnd); dExtDay.setHours(0, 0, 0, 0);
-      for (var dei = 0; dei < days.length; dei++) {
-        if (days[dei] >= tEnd && days[dei] <= dExtDay) {
-          if (dExtStartIdx === -1) dExtStartIdx = dei;
-          dExtEndIdx = dei;
-        }
-      }
-    }
-    var dExtColor = getExtensionBarColor(task);
-
-    for (var di = 0; di < days.length; di++) {
-      var dd = days[di];
-      var isToday = dd.getTime() === today.getTime();
-      var isWeekend = dd.getDay() === 0 || dd.getDay() === 6;
-      var cellClass = (isToday ? 'today-col' : '') + (isWeekend ? ' weekend-col' : '');
-
-      html += '<td class="gantt-cell ' + cellClass + '">';
-      if (di === barStartIdx) {
-        var spanDays = barEndIdx - barStartIdx + 1;
-        var widthPx = spanDays * 36;
-        html += '<div class="gantt-bar ' + barClass + '" style="left:2px;width:' + widthPx + 'px;cursor:pointer;' + barCustomStyle + '" title="' + sanitize(task.Title) + '" onclick="openEditTaskModal(' + task.id + ')">' + sanitize(task.Title) + '</div>';
-      }
-      if (di === dExtStartIdx && dExtStartIdx >= 0) {
-        var dExtW = (dExtEndIdx - dExtStartIdx + 1) * 36;
-        html += '<div class="gantt-bar-extension" title="' + t('extensionTooltip') + ' — ' + sanitize(task.Title) + '" style="left:2px;width:' + dExtW + 'px;border-color:' + dExtColor + ';background:' + dExtColor + '20;"></div>';
-      }
-      html += '</td>';
-    }
-
-    html += '</tr>';
-
-    // === Lignes sous-tâches (mode Jours) ===
-    if (expandedGanttTasks[task.id]) {
-      var sts = getGanttSubtasks(task.id);
-      for (var sti = 0; sti < sts.length; sti++) {
-        var st = sts[sti];
-        var stRange = getGanttSubtaskRange(st, task);
-        var stStartDay = new Date(stRange.start); stStartDay.setHours(0, 0, 0, 0);
-        var stEndDay = new Date(stRange.end); stEndDay.setHours(0, 0, 0, 0);
-        var stBarClass = ganttSubtaskBarClass(st, task);
-        var stBarStartIdx = -1, stBarEndIdx = -1;
-        for (var di2 = 0; di2 < days.length; di2++) {
-          var dday2 = days[di2];
-          if (dday2 >= stStartDay && dday2 <= stEndDay) {
-            if (stBarStartIdx === -1) stBarStartIdx = di2;
-            stBarEndIdx = di2;
-          }
-        }
-        html += '<tr class="gantt-subtask-row">' + renderGanttSubtaskLabelCell(st, task.id);
-        for (var di2 = 0; di2 < days.length; di2++) {
-          var dd2 = days[di2];
-          var isToday2 = dd2.getTime() === today.getTime();
-          var isWeekend2 = dd2.getDay() === 0 || dd2.getDay() === 6;
-          var cellClass2 = (isToday2 ? 'today-col' : '') + (isWeekend2 ? ' weekend-col' : '');
-          html += '<td class="gantt-cell ' + cellClass2 + '">';
-          if (di2 === stBarStartIdx) {
-            var stSpanDays = stBarEndIdx - stBarStartIdx + 1;
-            var stWidth = stSpanDays * 36;
-            html += '<div class="gantt-bar gantt-bar-subtask ' + stBarClass + '" style="left:2px;width:' + stWidth + 'px;cursor:pointer;" title="' + sanitize(st.Title) + '" onclick="openEditTaskModal(' + task.id + ')"></div>';
-          }
-          html += '</td>';
-        }
-        html += '</tr>';
-      }
-    }
-  }
-
-  html += '</tbody></table>';
-  var viewStart = monthNames[startDate.getMonth()];
-  var viewEnd = monthNames[endDate.getMonth()];
-  html += '<div class="gantt-footer">';
-  html += '<span>🌟 ' + t('ganttFullYear') + ' • ' + t('ganttNavInfo') + ' • ' + tasksWithDates.length + ' ' + (currentLang === 'fr' ? 'tâches' : 'tasks') + '</span>';
-  html += '<span>' + t('ganttViewRange') + ' ' + viewStart + ' - ' + viewEnd + ' ' + ganttYear + '</span>';
-  html += '</div></div>';
-
-  document.getElementById('gantt-view').innerHTML = html;
+  var grid = ganttBuildGrid({ today: today, dayNames: dayNames, monthNamesShort: monthNamesShort, monthNames: monthNames, count: tasksWithDates.length });
+  document.getElementById('gantt-view').innerHTML =
+    '<div class="gantt-container"><table class="gantt-table">' + grid.head + '<tbody>'
+    + ganttRenderRows(tasksWithDates, grid)
+    + '</tbody></table>' + grid.footer + '</div>';
   initGanttDragScroll();
 }
 

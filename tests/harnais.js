@@ -1,5 +1,7 @@
 // Harnais jsdom : charge la vraie page et le vrai script, face à un faux document
 // Grist tenu en mémoire. Lancer :  cd tests && npm install jsdom && node tout.js
+// Fuseau fixé avant toute date : les références du Gantt en dépendent.
+process.env.TZ = 'Europe/Paris';
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
@@ -55,7 +57,7 @@ function fauxGrist(base, refuser) {
   };
 }
 
-async function monter(base, { email = 'said@x.fr', proprietaire = true, refuser = null, stockage = null } = {}) {
+async function monter(base, { email = 'said@x.fr', proprietaire = true, refuser = null, stockage = null, maintenant = null } = {}) {
   let html = fs.readFileSync(RACINE + '/index.html', 'utf8');
   html = html.replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/g, '');
   const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'https://widget.test/' });
@@ -67,6 +69,16 @@ async function monter(base, { email = 'said@x.fr', proprietaire = true, refuser 
   w.HTMLElement.prototype.scrollIntoView = function () {};
   const erreurs = [];
   w.addEventListener('error', e => erreurs.push(e.message));
+  if (maintenant != null) {
+    // Horloge figée : « new Date() » et Date.now() rendent toujours le même instant,
+    // les dates construites avec des arguments restent exactes.
+    const horloge = w.document.createElement('script');
+    horloge.textContent = '(function(){var R=Date,F=' + Number(maintenant) + ';function D(){var a=arguments;'
+      + 'if(!(this instanceof D))return new R(F).toString();'
+      + 'return a.length?new (Function.prototype.bind.apply(R,[null].concat([].slice.call(a)))):new R(F);}'
+      + 'D.prototype=R.prototype;D.now=function(){return F;};D.parse=R.parse;D.UTC=R.UTC;window.Date=D;})();';
+    w.document.body.appendChild(horloge);
+  }
   const sc = w.document.createElement('script');
   sc.textContent = fs.readFileSync(RACINE + '/widget.js', 'utf8');
   w.document.body.appendChild(sc);
